@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.525
 
 ### One movable OAL controls menu
 - Replace separate floating buttons with one OAL-logo button. Tap for supported actions; hold and drag to reposition it. Start centered, with a one-time drag hint.
