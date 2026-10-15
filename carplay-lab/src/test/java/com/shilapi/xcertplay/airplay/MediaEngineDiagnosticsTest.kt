@@ -15,7 +15,7 @@ class MediaEngineDiagnosticsTest {
         "audioType" to "media", "streamConnectionID" to 1L, "spf" to 1024)
 
     @Test fun diagnosticsRequireLiveExactOwnerAndStopAfterTeardown() {
-        val received = mutableListOf<Pair<AirPlaySession, String>>()
+        val received = java.util.concurrent.CopyOnWriteArrayList<Pair<AirPlaySession, String>>()
         val engine = CarPlayMediaEngine(sink, onDiagnostic = { s, m -> received += s to m })
         val owner = session(); val other = session()
         engine.reportDiagnostic(owner, "before")
@@ -30,8 +30,13 @@ class MediaEngineDiagnosticsTest {
             assertEquals(1, received.size)
             `when`(owner.isClosed).thenReturn(false)
         } finally { engine.onSessionClosed(owner) }
+        assertFalse(engine.owns(owner))
         engine.reportDiagnostic(owner, "retired")
-        assertEquals(1, received.size)
+        // AudioStream may emit its final receive stats while teardown still owns
+        // the session. Assert the explicit ownership probes, not all stream traffic.
+        val probes = setOf("before", "foreign", "live", "closed", "retired")
+        assertEquals(listOf(owner to "live"), received.filter { it.second in probes })
+        assertTrue("every delivered diagnostic must retain the exact owner", received.all { it.first === owner })
     }
 
     @Test fun failingDiagnosticConsumerCannotEndMediaOwner() {
