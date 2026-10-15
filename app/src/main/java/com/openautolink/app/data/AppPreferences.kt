@@ -267,7 +267,7 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_VIDEO_FPS = 60
         const val DEFAULT_GAL_VERSION = "6.0"
         const val DEFAULT_DISPLAY_MODE = "fullscreen_immersive"
-        const val DEFAULT_OAL_UI_SCALE_PERCENT = 100
+        const val DEFAULT_OAL_UI_SCALE_PERCENT = 125
 
         /** Clamp out-of-range values and snap old/corrupt values to the nearest choice. */
         fun normalizeOalUiScalePercent(percent: Int): Int = when (percent.coerceIn(100, 150)) {

@@ -306,6 +306,7 @@ class OalUsbCarPlayRuntime(
                 }, receipt)
             } },wired=true,onStatus=::status) }
         active();onDisplayQualified(projection.displayConfiguration)
+        projection.setNetworkStartupDiagnosticStop(ncm::stopStartupDiagnostics)
         val scale=com.openautolink.carplaylab.media.CarPlayDisplayPolicy.scaleDiagnostic(projection.displayConfiguration)
         com.openautolink.app.diagnostics.DiagnosticLog.i("carplay-scale",scale)
         projection.setRuntimeIdentification(identification)

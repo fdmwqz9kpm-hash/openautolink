@@ -12,9 +12,15 @@ object CarPlayAudioDiagnostics {
     private const val audioType = "(compatibility|default|alert|media|telephony|speechRecognition|speechrecognition)"
     private const val codec = "(LPCM|OPUS|AAC_LC|AAC_ELD)"
     private const val failure = "(IOException|EOFException|SocketException|SocketTimeoutException|IllegalArgumentException|IllegalStateException|SecurityException|CodecException)"
+    private const val networkClass = "next=(tcp|icmpv6|udp|none|unknown) icmp=(ns|na|unknown) flags=([0-7]|1[6-9]|2[0-3]|unknown)"
+    private const val networkAttempt = "([1-9]|1[0-6])"
+    private const val packetBytes = "([0-9]{1,4}|[0-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])"
     private val accepted = Regex("BENCH_DIAG streamReply type=([0-9]{1,3}) port=$optional streamId=$optional")
     // Full-string matches: unknown fields, suffixes, control characters and upstream free text fail closed.
     private val schemas = listOf(
+        "USB network stage=packet direction=(in|out) packetBytes=$packetBytes $networkClass peerMacKnown=$bool decision=(forward|filter-drop|mac-unknown-drop) filterDrops=([0-9]|[12][0-9]|3[0-2]) macUnknownDrops=([0-9]|[12][0-9]|3[0-2]) sinceOpenUs=$number",
+        "USB network stage=send-start attempt=$networkAttempt packetBytes=$packetBytes $networkClass startMonoNs=$number",
+        "USB network stage=send-end attempt=$networkAttempt packetBytes=$packetBytes $networkClass result=(full|failed|short) transferred=-?[0-9]{1,10} blockBytes=$packetBytes timeoutMs=[0-9]{1,10} startMonoNs=$number elapsedUs=$number sinceOpenUs=$number",
         "NCM startup attempt=$number timeoutMs=[0-9]{1,10} transferred=-?[0-9]{1,10} blockBytes=[0-9]{1,10} ready=[01] writeStartMonoNs=$number writeElapsedUs=$number sinceOpenUs=$number",
         "CarPlay USB stage=endpoint result=written requestMonoNs=$number writtenReceiptMonoNs=$number writeAwaitElapsedUs=$number",
         "CarPlay USB stage=(permission|usb-permission|replacement-permission|vpn-consent|reenumeration|usbmux|phone-identification|carkit|listener|endpoint|runtime) result=(pending|ready|accepted|sent)",
@@ -143,9 +149,27 @@ class CarPlayAudioDiagnosticReporter(
     private var windowNs: Long? = null
     private var emitted = 0
     private var suppressed = 0L
+    private var networkCompletions = 0
+    private var networkFirstFull = false
 
     fun record(message: String) {
         val line = CarPlayAudioDiagnostics.sanitize(session, message) ?: return
+        // Completion reservations are lifetime-bounded independently of ordinary detail rate.
+        // A busy packet/status window must not erase an already-started USB attempt's result.
+        val attempt = networkCompletionAttempt.find(message)?.groupValues?.get(1)?.toInt()
+        val firstFull = message.startsWith("NCM startup ") && message.contains(" ready=1 ")
+        if (attempt != null || firstFull) {
+            val admitted = synchronized(this) {
+                if (attempt != null) {
+                    val bit = 1 shl (attempt - 1) // Exact sanitizer restricts attempts to 1..16.
+                    if (networkCompletions and bit != 0) false
+                    else { networkCompletions = networkCompletions or bit; true }
+                } else if (networkFirstFull) false
+                else { networkFirstFull = true; true }
+            }
+            if (admitted) runCatching { sink(line) }
+            return
+        }
         val dropped: Long = synchronized(this) {
             val now = clockNs()
             val start = windowNs
@@ -164,5 +188,8 @@ class CarPlayAudioDiagnosticReporter(
         runCatching { sink(line) }
     }
 
-    companion object { const val MAX_EVENTS_PER_SECOND = 64 }
+    companion object {
+        const val MAX_EVENTS_PER_SECOND = 64
+        private val networkCompletionAttempt = Regex("^USB network stage=send-end attempt=([0-9]+) ")
+    }
 }

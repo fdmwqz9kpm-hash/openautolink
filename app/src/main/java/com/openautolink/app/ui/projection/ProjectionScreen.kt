@@ -730,7 +730,7 @@ fun ProjectionScreen(
             onStats = viewModel::toggleStats,
             onReconnect = onReconnect,
             modifier = Modifier.align(Alignment.BottomEnd),
-            onSwitchPhone = if (PhoneSwitcherPolicy.visible(directTransport, connectionMode, uiState.overlayPhoneSwitchButton)) ({ viewModel.showCarHotspotChooser() }) else null,
+            onSwitchPhone = if (PhoneSwitcherPolicy.visible(directTransport, connectionMode)) ({ viewModel.showCarHotspotChooser() }) else null,
             carHotspotSwitching = carHotspotSwitching,
             onFileLogging = viewModel::toggleFileLogging,
             onUpload = viewModel::uploadLogsNow,

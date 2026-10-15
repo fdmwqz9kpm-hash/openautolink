@@ -356,6 +356,7 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
     ) {
+        SettingsVersionInfo()
         SectionHeader("Normal connections")
         Text("Android Auto and CarPlay keep separate normal connections. A USB phone can temporarily take over after you confirm; saved modes stay unchanged.",
             style = MaterialTheme.typography.bodySmall,
@@ -1485,40 +1486,15 @@ private fun DisplayTab(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // --- Overlay Buttons ---
-        SectionHeader("Overlay Buttons")
-
+        // --- OAL controls menu ---
+        SectionHeader("OAL controls menu")
         Spacer(modifier = Modifier.height(4.dp))
-
         Text(
-            text = "Customize floating overlay buttons during streaming.",
+            text = "Tap the OAL logo during projection for Settings, phone switching, reconnect and diagnostics. " +
+                "Long-press and drag the logo to move it. Its preferred position returns when screen space is available again.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 12.dp)
-        )
-
-        OverlayButtonToggle(
-            title = "Stats Button",
-            description = "Floating button to toggle performance stats overlay.",
-            checked = uiState.overlayStatsButton,
-            onCheckedChange = viewModel::updateOverlayStatsButton,
-            testTag = "overlayStatsToggle",
-        )
-
-        OverlayButtonToggle(
-            title = "Phone Switcher Button",
-            description = "Floating button to choose the active phone in Car Hotspot mode.",
-            checked = uiState.overlayPhoneSwitchButton,
-            onCheckedChange = viewModel::updateOverlayPhoneSwitchButton,
-            testTag = "overlayPhoneSwitchToggle",
-        )
-
-        OverlayButtonToggle(
-            title = "Reconnect Button",
-            description = "Floating button that runs the same action as Save & Reconnect.",
-            checked = uiState.overlayReconnectButton,
-            onCheckedChange = viewModel::updateOverlayReconnectButton,
-            testTag = "overlayReconnectToggle",
+            modifier = Modifier.padding(bottom = 12.dp),
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -2672,8 +2648,8 @@ private fun DiagnosticsSettingsTab(
             Column(modifier = Modifier.weight(1f)) {
                 Text("Upload Logs (maintainer)", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "Off by default. When on, a floating Upload button appears on " +
-                        "the projection screen; tapping it zips recent logs and POSTs " +
+                    "Off by default. When on, Upload Logs is available in the OAL " +
+                        "controls menu; selecting it zips recent logs and POSTs " +
                         "them to your own server for analysis. Only enable on your own " +
                         "devices — it never affects other users.",
                     style = MaterialTheme.typography.bodySmall,
@@ -2693,8 +2669,8 @@ private fun DiagnosticsSettingsTab(
             Column(modifier = Modifier.weight(1f)) {
                 Text("Simulate Ignition Cycle (maintainer)", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "Off by default. When on, a floating power button appears on " +
-                        "the projection screen. Tapping it disconnects, drops the " +
+                    "Off by default. When on, Simulate ignition cycle is available " +
+                        "in the OAL controls menu. Selecting it disconnects, drops the " +
                         "Bluetooth advertisement, waits 45 seconds, then brings it " +
                         "back.\n\n" +
                         "It cannot switch off the head unit's Bluetooth radio, so " +

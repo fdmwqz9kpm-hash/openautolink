@@ -10,9 +10,20 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.ConscryptMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(manifest = Config.NONE, sdk = [32])
+@Config(application = android.app.Application::class, manifest = Config.NONE, sdk = [32])
 @ConscryptMode(ConscryptMode.Mode.OFF)
 class OverlayButtonPositionStoreTest {
+    @Test fun applicationFixtureDoesNotBootProcessServices() {
+        // Config.NONE is ignored by Robolectric's AGP Build System API. Check
+        // the actual application, not just the annotation: OalApplication starts
+        // process-owned IO work that can outlive this test's Android sandbox.
+        assertEquals(
+            "This fixture must not boot OalApplication process services",
+            android.app.Application::class.java,
+            org.robolectric.RuntimeEnvironment.getApplication().javaClass,
+        )
+    }
+
     private fun preferences() = RuntimeEnvironment.getApplication().getSharedPreferences("overlay_positions", Context.MODE_PRIVATE)
         .also { it.edit().clear().commit() }
 
@@ -52,7 +63,7 @@ class OverlayButtonPositionStoreTest {
         assertTrue("safety clamping must not customize untouched defaults", prefs.all.isEmpty())
     }
 
-    @Test fun `real drag after untouched layout preserves interior fractions across modes and stack changes`() {
+    @Test fun `real drag after untouched layout preserves preferred top left across modes and stack changes`() {
         val prefs = preferences()
         val default = OverlayButtonPoint(0f, 0f)
         val system = OverlayButtonGeometry(1200f, 700f, 1120f, 628f, 64f, 56f)
@@ -62,14 +73,14 @@ class OverlayButtonPositionStoreTest {
         assertTrue(prefs.all.isEmpty())
         val drag = OverlayButtonPoint(-550f, -200f)
         store.saveOffset(system, drag)
-        val fraction = system.fractionFromOffset(drag)
+        val preferred = OverlayButtonPoint(system.anchorX + drag.x, system.anchorY + drag.y)
         val saved = prefs.all.toMap()
         for (geometry in listOf(fullWithStats, system.copy(anchorY = 564f), system)) {
             val restored = OverlayButtonPositionStore(prefs, "overlay_settings").readOffset(geometry, default)
-            assertEquals(fraction.x * (geometry.parentWidth - geometry.buttonWidth), geometry.anchorX + restored.x, 0.001f)
-            assertEquals(fraction.y * (geometry.parentHeight - geometry.buttonHeight), geometry.anchorY + restored.y, 0.001f)
+            assertEquals(preferred.x, geometry.anchorX + restored.x, 0.001f)
+            assertEquals(preferred.y, geometry.anchorY + restored.y, 0.001f)
         }
-        assertEquals("mode changes must not rewrite explicit drag fractions", saved, prefs.all)
+        assertEquals("mode changes must not rewrite the preferred position", saved, prefs.all)
     }
 
     @Test fun `legacy traps recover on first layout for settings info and upload without settings access`() {
@@ -104,7 +115,7 @@ class OverlayButtonPositionStoreTest {
             repeat(10) {
                 for (geometry in listOf(full, system, full.copy(anchorY = 990f))) {
                     val restored = OverlayButtonPositionStore(prefs, key).readOffset(geometry, OverlayButtonPoint(0f, 0f))
-                    assertEquals(geometry.parentWidth - geometry.buttonWidth, geometry.anchorX + restored.x, 0.01f)
+                    assertEquals(system.parentWidth - system.buttonWidth, geometry.anchorX + restored.x, 0.01f)
                     assertEquals(0f, geometry.anchorY + restored.y, 0.01f)
                 }
             }
@@ -130,6 +141,157 @@ class OverlayButtonPositionStoreTest {
         val reopened = OverlayButtonPositionStore(prefs, "overlay_settings").readOffset(geometry, OverlayButtonPoint(0f, 0f))
         assertEquals(offset.x, reopened.x, 0.001f)
         assertEquals(offset.y, reopened.y, 0.001f)
+    }
+
+    private fun assertTopLeft(geometry: OverlayButtonGeometry, offset: OverlayButtonPoint, x: Float, y: Float) {
+        assertEquals(x, geometry.anchorX + offset.x, 0.001f)
+        assertEquals(y, geometry.anchorY + offset.y, 0.001f)
+    }
+
+    @Test fun `tall small tall restores preference with only necessary per axis correction`() {
+        val prefs = preferences()
+        val tall = OverlayButtonGeometry(1200f, 1600f, 1100f, 1500f, 64f, 56f)
+        val small = tall.copy(parentWidth = 800f, parentHeight = 700f, anchorX = 700f, anchorY = 600f)
+        val store = OverlayButtonPositionStore(prefs, "overlay_settings")
+        store.saveOffset(tall, OverlayButtonPoint(-500f, -300f))
+        val saved = prefs.all.toMap()
+        repeat(3) {
+            assertTopLeft(small, store.readOffset(small, OverlayButtonPoint(0f, 0f)), 600f, 644f)
+            assertTopLeft(tall, store.readOffset(tall, OverlayButtonPoint(0f, 0f)), 600f, 1200f)
+        }
+        assertEquals(saved, prefs.all)
+    }
+
+    @Test fun `real drag while constrained replaces old preferred location`() {
+        val prefs = preferences()
+        val tall = OverlayButtonGeometry(1200f, 1600f, 1100f, 1500f, 64f, 56f)
+        val small = tall.copy(parentHeight = 700f, anchorY = 600f)
+        val store = OverlayButtonPositionStore(prefs, "overlay_settings")
+        store.saveOffset(tall, OverlayButtonPoint(-500f, -300f))
+        store.readOffset(small, OverlayButtonPoint(0f, 0f))
+        store.saveOffset(small, OverlayButtonPoint(-700f, -100f))
+        assertTopLeft(tall, store.readOffset(tall, OverlayButtonPoint(0f, 0f)), 400f, 500f)
+    }
+
+    @Test fun `safe origin changes preserve window preference without writes or unnecessary axis movement`() {
+        val prefs = preferences()
+        val initial = OverlayButtonGeometry(1000f, 800f, 900f, 700f, 100f, 100f, density = 2f)
+        val store = OverlayButtonPositionStore(prefs, "overlay_settings")
+        store.saveOffset(initial, OverlayButtonPoint(-800f, -500f))
+        val saved = prefs.all.toMap()
+        val inset = initial.copy(parentWidth = 920f, parentHeight = 550f, anchorX = 820f, anchorY = 450f,
+            originX = 80f, originY = 250f)
+        assertTopLeft(inset, store.readOffset(inset, OverlayButtonPoint(0f, 0f)), 20f, 0f)
+        assertTopLeft(initial, store.readOffset(initial, OverlayButtonPoint(0f, 0f)), 100f, 200f)
+        assertEquals(saved, prefs.all)
+    }
+
+    @Test fun `preferred dp follows base density but button sizing does not scale coordinates`() {
+        val prefs = preferences()
+        val geometry = OverlayButtonGeometry(1200f, 1600f, 1100f, 1500f, 64f, 56f, density = 2f)
+        val store = OverlayButtonPositionStore(prefs, "overlay_settings")
+        store.saveOffset(geometry, OverlayButtonPoint(-500f, -300f))
+        assertEquals(300f, prefs.getFloat("overlay_settings_preferred_x_dp", -1f), 0f)
+        assertEquals(600f, prefs.getFloat("overlay_settings_preferred_y_dp", -1f), 0f)
+        assertTrue("retain backward compatible V2 writes", prefs.contains("overlay_settings_parent_x"))
+        val saved = prefs.all.toMap()
+        val largerButtons = geometry.copy(buttonWidth = 180f, buttonHeight = 240f, anchorY = 1000f)
+        assertTopLeft(largerButtons, store.readOffset(largerButtons, OverlayButtonPoint(0f, 0f)), 600f, 1200f)
+        val densityChanged = geometry.copy(density = 1f, anchorX = 1000f, anchorY = 1100f)
+        assertTopLeft(densityChanged, store.readOffset(densityChanged, OverlayButtonPoint(0f, 0f)), 300f, 600f)
+        assertEquals(saved, prefs.all)
+    }
+
+    @Test fun `button growth clamps display only then shrinking restores preferred position`() {
+        val prefs = preferences()
+        val geometry = OverlayButtonGeometry(1000f, 800f, 900f, 700f, 50f, 50f)
+        val store = OverlayButtonPositionStore(prefs, "overlay_settings")
+        store.saveOffset(geometry, OverlayButtonPoint(40f, 40f))
+        val saved = prefs.all.toMap()
+        val larger = geometry.copy(buttonWidth = 200f, buttonHeight = 200f)
+        assertTopLeft(larger, store.readOffset(larger, OverlayButtonPoint(0f, 0f)), 800f, 600f)
+        assertTopLeft(geometry, store.readOffset(geometry, OverlayButtonPoint(0f, 0f)), 940f, 740f)
+        assertEquals(saved, prefs.all)
+    }
+
+    @Test fun `V2 migrates once on first valid measured geometry then stops proportional relocation`() {
+        val prefs = preferences()
+        prefs.edit().putFloat("overlay_settings_parent_x", 0.5f)
+            .putFloat("overlay_settings_parent_y", 0.75f).commit()
+        val store = OverlayButtonPositionStore(prefs, "overlay_settings")
+        val measured = OverlayButtonGeometry(1000f, 800f, 900f, 700f, 100f, 100f, density = 2f)
+        val before = prefs.all.toMap()
+        store.readOffset(measured.copy(parentWidth = 0f, parentHeight = 0f), OverlayButtonPoint(0f, 0f))
+        assertEquals(before, prefs.all)
+        assertTopLeft(measured, store.readOffset(measured, OverlayButtonPoint(0f, 0f)), 450f, 525f)
+        assertEquals(225f, prefs.getFloat("overlay_settings_preferred_x_dp", -1f), 0f)
+        assertEquals(262.5f, prefs.getFloat("overlay_settings_preferred_y_dp", -1f), 0f)
+        val saved = prefs.all.toMap()
+        val larger = measured.copy(parentWidth = 2000f, parentHeight = 1600f)
+        assertTopLeft(larger, store.readOffset(larger, OverlayButtonPoint(0f, 0f)), 450f, 525f)
+        assertEquals(saved, prefs.all)
+    }
+
+    @Test fun `legacy migration and real drag wait for measured finite geometry`() {
+        val prefs = preferences()
+        prefs.edit().putFloat("overlay_settings_x", -100f).putFloat("overlay_settings_y", -200f).commit()
+        val store = OverlayButtonPositionStore(prefs, "overlay_settings")
+        val measured = OverlayButtonGeometry(1000f, 800f, 900f, 700f, 100f, 100f)
+        val before = prefs.all.toMap()
+        for (invalid in listOf(measured.copy(parentWidth = 0f), measured.copy(parentHeight = 0f),
+            measured.copy(buttonWidth = 0f), measured.copy(buttonHeight = 0f),
+            measured.copy(parentWidth = Float.NaN), measured.copy(anchorY = Float.NaN),
+            measured.copy(originX = Float.NaN), measured.copy(originY = Float.POSITIVE_INFINITY),
+            measured.copy(density = 0f), measured.copy(density = Float.POSITIVE_INFINITY))) {
+            val offset = store.readOffset(invalid, OverlayButtonPoint(0f, 0f))
+            assertTrue(offset.x.isFinite() && offset.y.isFinite())
+            store.saveOffset(invalid, OverlayButtonPoint(100f, 100f))
+            assertEquals("transient layout cannot overwrite a placement", before, prefs.all)
+        }
+        assertTopLeft(measured, store.readOffset(measured, OverlayButtonPoint(0f, 0f)), 800f, 500f)
+        assertTrue(prefs.contains("overlay_settings_preferred_x_dp"))
+    }
+
+    @Test fun `zero travel temporarily displays origin without destroying preferred location`() {
+        val prefs = preferences()
+        val geometry = OverlayButtonGeometry(1000f, 800f, 900f, 700f, 100f, 100f)
+        val store = OverlayButtonPositionStore(prefs, "overlay_settings")
+        store.saveOffset(geometry, OverlayButtonPoint(-300f, -200f))
+        val saved = prefs.all.toMap()
+        val tiny = geometry.copy(parentWidth = 20f, parentHeight = 30f)
+        assertTopLeft(tiny, store.readOffset(tiny, OverlayButtonPoint(0f, 0f)), 0f, 0f)
+        assertTopLeft(geometry, store.readOffset(geometry, OverlayButtonPoint(0f, 0f)), 600f, 500f)
+        assertEquals(saved, prefs.all)
+    }
+
+    @Test fun `corrupt preferred and legacy preference types cannot crash or trap controls`() {
+        val prefs = preferences()
+        val geometry = OverlayButtonGeometry(1000f, 800f, 900f, 700f, 100f, 100f)
+        val store = OverlayButtonPositionStore(prefs, "overlay_settings")
+        for (suffixes in listOf("_preferred_x_dp" to "_preferred_y_dp", "_parent_x" to "_parent_y", "_x" to "_y")) {
+            for (value in listOf(Float.NaN, Float.POSITIVE_INFINITY, Float.MAX_VALUE)) {
+                prefs.edit().clear().putFloat("overlay_settings${suffixes.first}", value)
+                    .putString("overlay_settings${suffixes.second}", "not a float").commit()
+                val offset = store.readOffset(geometry.copy(density = 2f), OverlayButtonPoint(0f, 0f))
+                assertTrue(offset.x.isFinite() && offset.y.isFinite())
+                assertTrue(geometry.anchorX + offset.x in 0f..900f)
+                assertTrue(geometry.anchorY + offset.y in 0f..700f)
+            }
+        }
+    }
+
+    @Test fun `reset clears all known placement versions including hidden controls only`() {
+        val prefs = preferences()
+        val keys = listOf("overlay_menu", "overlay_settings", "overlay_switch_phone", "overlay_stats", "overlay_reconnect",
+            "overlay_file_log", "overlay_upload_logs", "overlay_simulate_ignition")
+        val editor = prefs.edit().putString("unrelated", "keep").putBoolean("overlay_stats_enabled", true)
+            .putFloat("custom_preferred_x_dp", 123f)
+        for (key in keys) for (suffix in listOf("_x", "_y", "_parent_x", "_parent_y", "_preferred_x_dp", "_preferred_y_dp")) {
+            editor.putFloat(key + suffix, 0.5f)
+        }
+        editor.commit()
+        OverlayButtonPositionStore.resetAll(prefs)
+        assertEquals(mapOf("unrelated" to "keep", "overlay_stats_enabled" to true, "custom_preferred_x_dp" to 123f), prefs.all)
     }
 
     @Test fun `persisted drag uses parent basis rather than optional column anchor`() {
