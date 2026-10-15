@@ -145,6 +145,17 @@ class OalUsbCarPlayRuntime(
             throw failureUi(reason)
         }
     }
+    private fun configurationAction(configuration: UsbConfiguration?, transitions: Int): String {
+        val appleEthernet=configuration?.let(IphoneCarPlayConfiguration::isCarPlayMode)==true
+        val action=when {
+            configuration!=null && appleEthernet -> "reuse-descriptors"
+            configuration!=null && transitions==1 -> "reuse-without-apple-ethernet"
+            transitions==0 -> "request-transition"
+            else -> "reject-missing-configuration"
+        }
+        status("CarPlay USB configuration found=${configuration!=null} appleEthernet=$appleEthernet transitions=$transitions decision=$action")
+        return action
+    }
     private fun runConnection() {
         active()
         require(isCandidate(device)) { "Selected USB device lacks Apple USBMUX" }
@@ -164,20 +175,42 @@ class OalUsbCarPlayRuntime(
         active()
         val host=IphoneUsbHost(context,usb,IphoneUsbMatcher.appleVendor())
         var selected=device
-        if(IphoneCarPlayConfiguration.find(selected)==null) {
+        val initialConfiguration=IphoneCarPlayConfiguration.find(selected)
+        // Pinned DiPlay WiredConfigurationAction: ready descriptors need no request;
+        // otherwise try once, retaining an older peer's still-valid rejected-request fallback.
+        if(configurationAction(initialConfiguration,0)=="request-transition") {
             val detached=AtomicBoolean(false)
             own { registerDetach(device.deviceName) { detached.set(true) } }
             check(onReenumerationStarted()) { "USB transition ownership unavailable" }
             val started=SystemClock.elapsedRealtime()
             var transition:IphoneUsbHost.TransitionResult?=null
+            active()
             host.requestCarPlayReenumerationAsync(device,Executor { it.run() }) { transition=it }
-            when(val result=transition) {
-                is IphoneUsbHost.TransitionResult.Failed -> throw result.error
-                is IphoneUsbHost.TransitionResult.ReenumerationRequested -> Unit
+            active()
+            val reenumerating=when(val result=transition) {
+                is IphoneUsbHost.TransitionResult.Failed -> {
+                    val attached=usb.deviceList[device.deviceName]
+                    // No fallback after delivered detach, replacement, cancellation or lost permission.
+                    val fallback=initialConfiguration!=null && !detached.get() && attached!=null &&
+                        attached.deviceId==device.deviceId && attached.vendorId==device.vendorId &&
+                        attached.productId==device.productId && usb.hasPermission(device) &&
+                        IphoneCarPlayConfiguration.find(attached)!=null
+                    status("CarPlay USB transition attempt=1 result=rejected fallback=$fallback")
+                    if(!fallback) throw result.error
+                    check(onReplacementAccepted(device)) { "USB unchanged configuration ownership revoked" }
+                    active()
+                    check(!detached.get()) { "USB unchanged configuration detached during admission" }
+                    configurationAction(initialConfiguration,1)
+                    false
+                }
+                is IphoneUsbHost.TransitionResult.ReenumerationRequested -> {
+                    status("CarPlay USB transition attempt=1 result=accepted fallback=false")
+                    true
+                }
                 else -> error("USB transition unavailable")
             }
-            status("CarPlay USB stage=reenumeration result=pending")
-            while(true) {
+            if(reenumerating) status("CarPlay USB stage=reenumeration result=pending")
+            while(reenumerating) {
                 active(); val elapsed=SystemClock.elapsedRealtime()-started
                 if(elapsed>=UsbCarPlayPermission.REENUMERATION_TIMEOUT_MS) throw TimeoutException("Selected USB reenumeration expired")
                 val candidates=usb.deviceList.values.filter { isCandidate(it) && it.deviceName!=device.deviceName &&
@@ -195,7 +228,7 @@ class OalUsbCarPlayRuntime(
                     check(fresh.size==1 && fresh.single().deviceName==candidate.deviceName &&
                         fresh.single().deviceId==candidate.deviceId) { "USB replacement changed during permission" }
                     check(UsbCarPlayPolicy.acceptReplacement(serial,candidate.serialNumber.orEmpty(),detached.get(),acceptedElapsed))
-                    check(IphoneCarPlayConfiguration.find(candidate)!=null) { "USB replacement lacks CarPlay configuration" }
+                    check(configurationAction(IphoneCarPlayConfiguration.find(candidate),1)!="reject-missing-configuration") { "USB replacement lacks CarPlay configuration" }
                     check(onReplacementAccepted(candidate)) { "USB replacement ownership revoked" }
                     selected=candidate;topology=topology(candidate);break
                 }
@@ -203,7 +236,21 @@ class OalUsbCarPlayRuntime(
             }
         }
         active()
+        val configuration=IphoneCarPlayConfiguration.find(selected) ?: error("USB CarPlay configuration missing")
+        val function=NcmFunctionDiscovery.find(configuration) ?: error("USB NCM function missing")
+        val usbMux=checkNotNull(IphoneCarPlayConfiguration.usbMuxInterface(configuration))
+        // Chosen descriptor receipt, not a claim of continuous active device/driver state.
+        status("CarPlay USB selection configurationId=${configuration.id} usbmuxInterfaceId=${usbMux.id} usbmuxAlt=${usbMux.alternateSetting} ncmControlInterfaceId=${function.control.id} ncmControlAlt=${function.control.alternateSetting} ncmDataInterfaceId=${function.data.id} ncmDataAlt=${function.data.alternateSetting}")
         val pipe=own {
+            // Owner callbacks may race a delivered detach. Recheck the exact census and real
+            // permission at the open boundary; the host independently checks permission again.
+            val attached=usb.deviceList[selected.deviceName]
+            check(attached!=null && attached.deviceId==selected.deviceId &&
+                attached.vendorId==selected.vendorId && attached.productId==selected.productId) {
+                "Selected USB detached before open"
+            }
+            check(usb.hasPermission(selected)) { "Selected USB permission revoked before open" }
+            active()
             var opened:IphoneUsbHost.Iap2SessionResult?=null
             host.openIap2UsbSessionAsync(selected,Executor { it.run() }) { opened=it }
             when(val result=opened) {
@@ -212,8 +259,6 @@ class OalUsbCarPlayRuntime(
                 else -> error("USBMUX unavailable")
             }
         }
-        val configuration=IphoneCarPlayConfiguration.find(selected) ?: error("USB CarPlay configuration missing")
-        val function=NcmFunctionDiscovery.find(configuration) ?: error("USB NCM function missing")
         val ncm=own {
             val ncmConnection=usb.openDevice(selected) ?: error("USB NCM unavailable")
             NcmUsbBridge.open(ncmConnection,function,onDiagnostic={ status(it) })

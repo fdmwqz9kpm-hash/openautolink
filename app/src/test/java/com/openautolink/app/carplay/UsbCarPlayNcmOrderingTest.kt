@@ -14,9 +14,10 @@ class UsbCarPlayNcmOrderingTest {
         val mux = source.indexOf("val mux=own { Iap2UsbMuxHost.open(pipe) }")
         assertTrue("USBMUX pipe must be opened before the mux host", pipe >= 0 && mux > pipe)
         val beforeMux = source.substring(pipe, mux)
+        // Descriptor discovery/receipt may precede opening; physical NCM still follows USBMUX.
+        assertTrue(source.indexOf("val configuration=IphoneCarPlayConfiguration.find(selected)") in 0 until pipe)
+        assertTrue(source.indexOf("val function=NcmFunctionDiscovery.find(configuration)") in 0 until pipe)
         val expected = """
-            val configuration=IphoneCarPlayConfiguration.find(selected) ?: error("USB CarPlay configuration missing")
-            val function=NcmFunctionDiscovery.find(configuration) ?: error("USB NCM function missing")
             val ncm=own {
                 val ncmConnection=usb.openDevice(selected) ?: error("USB NCM unavailable")
                 NcmUsbBridge.open(ncmConnection,function,onDiagnostic={ status(it) })

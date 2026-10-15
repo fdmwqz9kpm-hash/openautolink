@@ -17,7 +17,11 @@ object CarPlayAudioDiagnostics {
     private const val packetBytes = "([0-9]{1,4}|[0-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])"
     private val accepted = Regex("BENCH_DIAG streamReply type=([0-9]{1,3}) port=$optional streamId=$optional")
     // Full-string matches: unknown fields, suffixes, control characters and upstream free text fail closed.
+    private const val usbByte = "(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])"
     private val schemas = listOf(
+        "CarPlay USB configuration found=$bool appleEthernet=$bool transitions=[01] decision=(reuse-descriptors|reuse-without-apple-ethernet|request-transition|reject-missing-configuration)",
+        "CarPlay USB transition attempt=1 result=(accepted|rejected) fallback=$bool",
+        "CarPlay USB selection configurationId=$usbByte usbmuxInterfaceId=$usbByte usbmuxAlt=$usbByte ncmControlInterfaceId=$usbByte ncmControlAlt=$usbByte ncmDataInterfaceId=$usbByte ncmDataAlt=$usbByte",
         "USB network stage=packet direction=(in|out) packetBytes=$packetBytes $networkClass peerMacKnown=$bool decision=(forward|filter-drop|mac-unknown-drop) filterDrops=([0-9]|[12][0-9]|3[0-2]) macUnknownDrops=([0-9]|[12][0-9]|3[0-2]) sinceOpenUs=$number",
         "USB network stage=send-start attempt=$networkAttempt packetBytes=$packetBytes $networkClass startMonoNs=$number",
         "USB network stage=send-end attempt=$networkAttempt packetBytes=$packetBytes $networkClass result=(full|failed|short) transferred=-?[0-9]{1,10} blockBytes=$packetBytes timeoutMs=[0-9]{1,10} startMonoNs=$number elapsedUs=$number sinceOpenUs=$number",

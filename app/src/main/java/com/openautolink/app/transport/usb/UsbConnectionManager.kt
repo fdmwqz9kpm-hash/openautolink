@@ -194,7 +194,9 @@ class UsbConnectionManager(
 
     /** Capture with retirement acknowledgement before launching the runtime; closures fence generations.
      * Begin BEFORE the mode-switch request. Accept ONLY after fresh permission, private serial,
-     * exact bus, detach, configuration and uniqueness have been checked by the runtime. */
+     * exact bus, detach, configuration and uniqueness have been checked by the runtime.
+     * A rejected request may acknowledge the exact unchanged, attached and permitted device;
+     * this disarms only the provisional transition deadline, without releasing its selection. */
     fun iphoneReenumerationCallbacks(device: UsbDevice): Pair<() -> Boolean, (UsbDevice) -> Boolean> {
         val token = dispatchOwnership.current()?.takeIf {
             it.route == UsbDispatchOwnership.Route.APPLE && it.deviceName == device.deviceName && !it.retiring
@@ -220,13 +222,23 @@ class UsbConnectionManager(
     @Synchronized private fun acceptIphoneReplacement(token: UsbDispatchOwnership.Token, replacement: UsbDevice): Boolean {
         val old = selectedIphone ?: return false
         if (!isRunning || iphoneTransitionToken !== token || System.nanoTime() >= iphoneTransitionDeadline ||
-            !token.reenumerating || token.retiring || replacement.deviceName == old.deviceName ||
-            replacement.deviceName.substringBeforeLast('/') != old.deviceName.substringBeforeLast('/') ||
-            replacement.deviceName in detachedDeviceNames || !dispatchOwnership.isCurrent(token)) return false
-        if (!dispatchOwnership.adoptReenumeration(token, replacement.deviceName, replacement.vendorId)) return false
-        // Keep rejected unverified enumerations fenced on runtime failure; explicit selection/replug retries.
-        rejectedDeviceNames.add(old.deviceName)
-        selectedIphone = replacement
+            token.retiring || replacement.deviceName in detachedDeviceNames || !dispatchOwnership.isCurrent(token)) return false
+        if (replacement.deviceName == old.deviceName) {
+            // A rejected request may retain the exact unchanged enumeration. Disarm only its
+            // provisional deadline; never undo a delivered detach or adopt a new generation.
+            val attached = usbManager.deviceList[old.deviceName] ?: return false
+            if (token.reenumerating || replacement.deviceId != old.deviceId ||
+                replacement.vendorId != old.vendorId || replacement.productId != old.productId ||
+                attached.deviceId != old.deviceId || attached.vendorId != old.vendorId ||
+                attached.productId != old.productId || !usbManager.hasPermission(old)) return false
+        } else {
+            if (!token.reenumerating ||
+                replacement.deviceName.substringBeforeLast('/') != old.deviceName.substringBeforeLast('/')) return false
+            if (!dispatchOwnership.adoptReenumeration(token, replacement.deviceName, replacement.vendorId)) return false
+            // Keep rejected unverified enumerations fenced on runtime failure; explicit selection/replug retries.
+            rejectedDeviceNames.add(old.deviceName)
+            selectedIphone = replacement
+        }
         iphoneTransitionToken = null
         iphoneReenumerationJob?.cancel()
         iphoneReenumerationJob = null
