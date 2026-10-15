@@ -41,8 +41,8 @@ android {
         applicationId = findProperty("appId") as? String ?: "com.fdmwqz9kpmhash.carlink"
         minSdk = 32
         targetSdk = 36
-        versionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 61
-        versionName = (findProperty("oalVersionName") as? String) ?: "0.1.61"
+        versionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 63
+        versionName = (findProperty("oalVersionName") as? String) ?: "0.1.63"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

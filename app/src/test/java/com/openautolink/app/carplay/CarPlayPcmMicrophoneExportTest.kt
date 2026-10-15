@@ -35,8 +35,10 @@ class CarPlayPcmMicrophoneExportTest {
         val cap=AndroidMicrophoneSupport.probe(app)
         val lines=java.util.concurrent.CopyOnWriteArrayList<String>()
         val sent=CountDownLatch(1)
+        val policy=CountDownLatch(1)
         val reporter=CarPlayAudioDiagnosticReporter(1,System::nanoTime) {
             lines.add(it); if (it.contains("microphone-datagram-sent")) sent.countDown()
+            if (it.contains("microphone-policy")) policy.countDown()
         }
         ShadowAudioRecord.setSource(object : ShadowAudioRecord.AudioRecordSource {
             override fun readInByteArray(b: ByteArray,o: Int,n: Int,blocking: Boolean): Int {
@@ -54,7 +56,18 @@ class CarPlayPcmMicrophoneExportTest {
                 assertTrue(sink.supportsMicrophone(AudioOutputSupport.negotiate(0x40L,100,"telephony")!!))
                 sink.onMicrophoneStarted(MicrophoneStreamId(session,100,"telephony",1),mic)
                 assertTrue("actual send receipt omitted by sanitizer",sent.await(3,TimeUnit.SECONDS))
+                assertTrue("actual exact-recorder policy omitted by sanitizer",policy.await(3,TimeUnit.SECONDS))
+                assertTrue(lines.any { it.contains("microphone-policy scope=own source=VOICE_COMMUNICATION rate=24000 permission=granted") })
                 assertTrue(lines.any { it.endsWith("media stage=microphone-format type=100 audioType=telephony codec=LPCM rate=24000 channels=1 spf=480 source=VOICE_COMMUNICATION") })
+                assertTrue("actual capture aggregate omitted by sanitizer",lines.any {
+                    it.endsWith("media stage=microphone-capture type=100 audioType=telephony frames=1 nonzeroFrames=0 state=3 ended=false")
+                })
+                // Deterministic finite control/focus receipts exercise the same production
+                // reporter/archive boundary, not physical focus events or phone receipt.
+                reporter.record("media stage=audio-focus-change change=-3 volumePercent=20")
+                reporter.record("media stage=media-control index=2 outcome=sent")
+                assertTrue(lines.any { it.endsWith("media stage=audio-focus-change change=-3 volumePercent=20") })
+                assertTrue(lines.any { it.endsWith("media stage=media-control index=2 outcome=sent") })
                 val contents=lines.joinToString("\n",postfix="\n")
                 val log=java.io.File(folder,"oal_pcm.log").apply { writeText(contents) }
                 val plan=com.openautolink.app.diagnostics.LogUploadArchive.select(listOf(log),log.lastModified())
@@ -114,6 +127,9 @@ class CarPlayPcmMicrophoneExportTest {
             "media stage=microphone-format type=100 audioType=telephony codec=LPCM rate=24000 channels=1 spf=480 source=VOICE_COMMUNICATION",
             "media stage=microphone-started type=100; uplink audibility unverified",
             "media stage=microphone-datagram-sent packets=1; phone receipt unverified",
+            "media stage=microphone-capture type=100 audioType=telephony frames=2 nonzeroFrames=1 state=3 ended=true",
+            "media stage=audio-focus-change change=-3 volumePercent=20",
+            "media stage=media-control index=2 outcome=sent",
             "media stage=microphone-retirement-pending",
             "media stage=microphone-worker-start-failed",
             "media stage=microphone-failed type=100 errorType=SecurityException")

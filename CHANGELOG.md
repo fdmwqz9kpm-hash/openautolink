@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.1.523
+
+### CarPlay first-video recovery
+- Fix a configuration-publication race introduced with 0.1.521 background-video retention that could discard the first keyframe arriving while the decoder worker waited for input.
+- Preserve the current decoder and queued frames for identical codec configuration notifications; genuinely changed configurations still create a new fenced decoder receipt.
+- Add bounded configuration, decoder-reconfiguration and recovery-reason diagnostics without exporting raw codec data.
+- Preserve surface/session ownership, stale callback rejection, background retention, audio and USB permission behavior.
+- Debug/release suites passed per variant: app 1,344, receiver 478, companion 118; one optional private-archive app replay test skipped per variant. Independent scoped review passed.
+- Vehicle first-video latency, sustained rendering and unplug/replug recovery still require verification. No guarantee of under-10-second startup or a single USB permission prompt.
+
+## 0.1.522
+
+### USB startup recovery
+- Fix the 0.1.521 silent authorization wait after USB mode switching that could cancel startup and return to the phone picker.
+- Request permission for the exact admitted initial/replacement device when Android has not granted access, preserving the same connection attempt and platform authorization checks.
+- Two real permission approvals can still be necessary across USB re-enumeration; a single system prompt is not guaranteed. Vehicle verification remains pending.
+
+### CarPlay startup feedback
+- Show a compact Waiting for video indicator until the current presentation actually renders a frame.
+- Fence queued USB/Wi-Fi presentation replacements against predecessor rendered telemetry, and hide the indicator on stop/failure and behind projection dialogs.
+- Debug/release unit suites passed: app 1,344, receiver 467 and companion 118 tests per variant; one private-archive-dependent app test skipped per variant.
+- No companion behavior changes or claim of faster final-approval-to-first-render timing.
+
+## 0.1.520
+
+### Android Auto USB
+- Repair Android USB access-result delivery after the unified CarPlay USB integration; permission callbacks now match the registered receiver.
+- Clear stale permission requests when a phone disconnects or an exact USB admission fails, preserving current-owner and stale-generation checks.
+- Reset failed USB admission state so deliberate Retry USB can request access again.
+- Cover permission delivery and denial, equal-but-distinct device-name cleanup, retry and stale callback protection on Android API 32 and 34.
+- Applies to saved Android Auto USB mode and wireless-to-USB Switch. Software regression tests pass; physical permission prompts and sustained projection still require vehicle confirmation.
+- No companion update is required for this car-side correction. CarPlay permission handling and saved connection modes are unchanged.
+
+### CarPlay vehicle data
+- Discover each EV property's actual HAL change mode instead of inferring it from the requested sensor rate.
+- Permit stable STATIC/ONCHANGE event timestamps only while real status reads or events keep the exact registration live; retain existing age limits for continuous or unknown modes.
+- Revalidate supported stable-source properties on the existing serialized vehicle-data lane and promptly revoke unavailable/null observations. Retain actual usable capacity requirements and do not substitute nominal capacity.
+- Vehicle change-mode confirmation and Apple Maps EV recognition remain unverified.
+
+### CarPlay microphone diagnostics
+- Add bounded exact-recorder input-route, client-silenced, permission and global-mute receipts to distinguish capture policy from uplink delivery.
+- Keep OS queries on one zero-backlog process worker with at most three attempts per capture and fence late results at close.
+- Export only finite sanitized metadata, not raw audio or device identities. No microphone source/rate change or claim that Siri silence is fixed.
+
 ## 0.1.518
 
 ### CarPlay audio negotiation

@@ -72,6 +72,47 @@ class OalMediaSessionManager private constructor(private val context: Context) {
     // Media control callback for routing GM's native MediaSession controls to AA.
     @Volatile
     var mediaControlCallback: MediaControlCallback? = null
+    private data class CarPlayControls(val owner: Any, val callback: MediaControlCallback,
+                                       val onDiagnostic: (String) -> Unit,
+                                       val sequence: java.util.concurrent.atomic.AtomicLong)
+    private var carPlayControls: CarPlayControls? = null
+
+    /** Observer must only enqueue bounded work; it runs at original command ingress, before HID mapping. */
+    internal fun installCarPlayControls(owner: Any, callback: MediaControlCallback,
+                                       onDiagnostic: (String) -> Unit = {}) = synchronized(sessionLock) {
+        val sequence = carPlayControls?.takeIf { it.owner === owner }?.sequence
+            ?: java.util.concurrent.atomic.AtomicLong()
+        carPlayControls = CarPlayControls(owner, callback, onDiagnostic, sequence)
+    }
+    internal fun retireCarPlayControls(owner: Any) = synchronized(sessionLock) {
+        if (carPlayControls?.owner === owner) carPlayControls = null
+    }
+    private fun dispatchMediaCommand(command: GmMediaControlPolicy.Command) {
+        val target = synchronized(sessionLock) { carPlayControls }
+        if (target != null) {
+            val elapsedMs = android.os.SystemClock.elapsedRealtime()
+            com.openautolink.app.carplay.MetadataHostOwnership.process.publish(target.owner) {
+                // Framework controller context is valid only during this synchronous callback.
+                // Never retain/export the package, UID or PID; these classes do not prove focus ownership.
+                val controller = runCatching { controllerClass(mediaSession?.currentControllerInfo?.packageName) }
+                    .getOrDefault("unknown")
+                val sequence = target.sequence.incrementAndGet()
+                runCatching { target.onDiagnostic("media stage=media-command-ingress command=${command.name} controller=$controller sequence=$sequence elapsedMs=$elapsedMs") }
+                target.callback.onCommand(command)
+            }
+        } else com.openautolink.app.carplay.MetadataHostOwnership.process.legacy {
+            mediaControlCallback?.onCommand(command)
+        }
+    }
+
+    internal fun controllerClass(packageName: String?): String = when (packageName) {
+        null, "" -> "unknown"
+        "com.android.bluetooth" -> "bluetooth"
+        "com.android.car" -> "car-service"
+        "com.android.systemui" -> "system-ui"
+        "com.gm.rhmi", "com.gm.gmaudio.server" -> "oem"
+        else -> "other"
+    }
 
     interface MediaControlCallback {
         fun onCommand(command: GmMediaControlPolicy.Command)
@@ -84,23 +125,23 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             mediaSession = MediaSessionCompat(context, "OpenAutoLinkMedia").apply {
                 setCallback(object : MediaSessionCompat.Callback() {
                     override fun onPlay() {
-                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.PLAY)
+                        dispatchMediaCommand(GmMediaControlPolicy.Command.PLAY)
                     }
 
                     override fun onPause() {
-                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.PAUSE)
+                        dispatchMediaCommand(GmMediaControlPolicy.Command.PAUSE)
                     }
 
                     override fun onStop() {
-                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.STOP)
+                        dispatchMediaCommand(GmMediaControlPolicy.Command.STOP)
                     }
 
                     override fun onSkipToNext() {
-                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.NEXT)
+                        dispatchMediaCommand(GmMediaControlPolicy.Command.NEXT)
                     }
 
                     override fun onSkipToPrevious() {
-                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.PREVIOUS)
+                        dispatchMediaCommand(GmMediaControlPolicy.Command.PREVIOUS)
                     }
 
                     override fun onMediaButtonEvent(mediaButtonEvent: android.content.Intent): Boolean {
@@ -143,6 +184,7 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             }
             mediaSession = null
             mediaControlCallback = null
+            carPlayControls = null
             cachedArtHash = 0
             cachedBitmap = null
             lastPushedPlaying = null

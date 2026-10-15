@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicReference
 class LabMediaTransportTest {
     @Test fun screenRejectsOtherPeerThenDecryptsSelectedPeerFrame() {
         val expected = InetAddress.getByName("127.0.0.1")
+        // IPv6 loopback is a distinct local peer without requiring a 127.0.0.2 alias on macOS.
+        val rejectedPeer = InetAddress.getByName("::1")
         val key = ByteArray(32) { (it + 1).toByte() }
         val screen = ScreenStream(key, expectedPeer = expected)
         val received = AtomicReference<ByteArray>()
@@ -22,8 +24,8 @@ class LabMediaTransportTest {
         })
         try {
             Socket().use { rejected ->
-                rejected.bind(InetSocketAddress("127.0.0.2", 0))
-                rejected.connect(InetSocketAddress(expected, port)); rejected.getOutputStream().write(ByteArray(128))
+                rejected.bind(InetSocketAddress(rejectedPeer, 0))
+                rejected.connect(InetSocketAddress(rejectedPeer, port)); rejected.getOutputStream().write(ByteArray(128))
             }
             Socket().use { sender ->
                 sender.bind(InetSocketAddress(expected, 0)); sender.connect(InetSocketAddress(expected, port))
@@ -39,6 +41,7 @@ class LabMediaTransportTest {
     }
     @Test fun audioRejectsOtherPeerThenAuthenticatesSelectedPeerPcm() {
         val expected = InetAddress.getByName("127.0.0.1")
+        val rejectedPeer = InetAddress.getByName("::1")
         val key = ByteArray(32) { (it + 7).toByte() }
         val stream = AudioStream(key, 100, expectedPeer = expected)
         val received = AtomicReference<ByteArray>()
@@ -51,8 +54,8 @@ class LabMediaTransportTest {
             val pcm = byteArrayOf(0x01, 0x02, 0x03, 0x04)
             val sealed = AirPlayCrypto.chachaSeal(key, ByteArray(12), pcm, header.copyOfRange(4, 12))
             val wire = header + sealed + ByteArray(8)
-            DatagramSocket(InetSocketAddress("127.0.0.2",0)).use { sender ->
-                sender.send(DatagramPacket(wire, wire.size, expected, port))
+            DatagramSocket(InetSocketAddress(rejectedPeer,0)).use { sender ->
+                sender.send(DatagramPacket(wire, wire.size, rejectedPeer, port))
                 assertFalse(latch.await(100, TimeUnit.MILLISECONDS))
             }
             DatagramSocket(InetSocketAddress(expected,0)).use { sender ->

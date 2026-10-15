@@ -24,6 +24,7 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig,
     private val pending = ArrayBlockingQueue<OpusEncoder.Frame>(4)
     @Volatile private var recorder: AudioRecord? = null
     @Volatile private var socket: DatagramSocket? = null
+    @Volatile private var policy: MicrophonePolicyDiagnostics? = null
     val isRetired: Boolean get() = retired.get()
     val isClosed: Boolean get() = closed.get()
     private val thread = Thread(::run, "lab-carplay-mic").apply { isDaemon = true }
@@ -44,6 +45,19 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig,
         var encoder: OpusEncoder? = null
         var capture: AudioRecord? = null
         var transport: DatagramSocket? = null
+
+        var capturedFrames = 0L
+        var nonzeroFrames = 0L
+        fun captureReceipt(ended: Boolean) {
+            // Only aggregate signal presence and public routing policy, never samples/levels,
+            // device identifiers, addresses or recording configuration dumps.
+            // AudioRecord.getRecordingState reads local state; avoid potentially stalled public
+            // Binder route/configuration queries on the capture/transport owner.
+            val state = runCatching { capture?.recordingState }.getOrNull()
+                ?.takeIf { it == AudioRecord.RECORDSTATE_STOPPED || it == AudioRecord.RECORDSTATE_RECORDING }
+                ?.toString() ?: "unknown"
+            runCatching { report("media stage=microphone-capture type=100 audioType=${config.audioType} frames=$capturedFrames nonzeroFrames=$nonzeroFrames state=$state ended=$ended") }
+        }
         try {
             if (closed.get() || !AndroidMicrophoneSupport.permissionGranted()) return
             if (config.formatBits !in AndroidMicrophoneSupport.capability.bits(config.audioType)) return
@@ -72,6 +86,8 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig,
             check(record.recordingState == AudioRecord.RECORDSTATE_RECORDING)
             report("media stage=microphone-format type=100 audioType=${config.audioType} codec=${config.codec} rate=${config.sampleRate} channels=${config.channels} spf=${config.rtpSamplesPerPacket} source=$source")
             report("media stage=microphone-started type=100; uplink audibility unverified")
+            policy = AndroidMicrophoneSupport.policyDiagnostics(record, source, config.sampleRate, report)
+            if (closed.get()) { policy?.close(); return }
             val pcm = ByteArray(config.frameBytes)
             // Same connection-ID re-SETUP can reuse a key: randomized counters avoid restarting nonce0.
             val counters = MicrophoneCounters(nonce = SecureRandom().nextLong().ushr(1))
@@ -84,6 +100,10 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig,
                 if (count == 0) { Thread.sleep(2); continue }
                 filled += count
                 if (filled != pcm.size) continue
+                capturedFrames++
+                if (pcm.any { it != 0.toByte() }) nonzeroFrames++
+                if (capturedFrames == 1L || capturedFrames == 250L || capturedFrames == 500L) policy?.sample()
+                if (capturedFrames == 1L || capturedFrames % 250 == 0L) captureReceipt(false)
                 val frames = if (codec == null) {
                     // AudioRecord PCM16 is little endian; CarPlay LPCM payloads are big endian.
                     val body = pcm.copyOf()
@@ -112,6 +132,8 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig,
         } catch (failure: Exception) {
             if (!closed.get()) report("media stage=microphone-failed type=100 errorType=${failure.javaClass.simpleName}")
         } finally {
+            policy?.close() // revokes best-effort receipts, never joins an OS query
+            if (capturedFrames > 0) captureReceipt(true)
             closed.set(true); pending.clear()
             synchronized(recordLock) { recorder = null }
             runCatching { capture?.stop() }; runCatching { capture?.release() }
@@ -123,6 +145,7 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig,
     }
     override fun close() {
         closed.set(true)
+        policy?.close() // revoke diagnostics even while the exact recorder read is stalled
         // stop unblocks READ_BLOCKING. Only the owning worker releases recorder/codec.
         synchronized(recordLock) { runCatching { recorder?.stop() } }
         socket?.close(); thread.interrupt()

@@ -1,6 +1,6 @@
 # Local macOS build for this fork
 
-This fork retains the former Carlink Play identity `com.fdmwqz9kpmhash.carlink`, with version code 61. The recovered prior bundle uses code 60. Version 61 must remain above the highest uploaded Play version. The source namespace is still OpenAutoLink.
+This fork retains the former Carlink Play identity `com.fdmwqz9kpmhash.carlink`, with version code 63. The previous private CarPlay release uses code 62. Future updates must remain above the highest uploaded Play version. The source namespace is still OpenAutoLink.
 
 The upstream Docker builder is x86-64-only. The Android application can also be compiled locally on Apple Silicon using the upstream prebuilt Android native dependencies. This path was verified with JDK 21, Android SDK 36, build-tools 34.0.0, NDK 28.2.13676358, CMake 3.22.1, and Gradle 8.11.1.
 
