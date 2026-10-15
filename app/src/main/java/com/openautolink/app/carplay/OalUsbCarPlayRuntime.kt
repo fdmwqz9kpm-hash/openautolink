@@ -216,7 +216,7 @@ class OalUsbCarPlayRuntime(
         val function=NcmFunctionDiscovery.find(configuration) ?: error("USB NCM function missing")
         val ncm=own {
             val ncmConnection=usb.openDevice(selected) ?: error("USB NCM unavailable")
-            NcmUsbBridge.open(ncmConnection,function)
+            NcmUsbBridge.open(ncmConnection,function,onDiagnostic={ status(it) })
         }
         val mux=own { Iap2UsbMuxHost.open(pipe) }
         status("CarPlay USB stage=usbmux result=ready")
@@ -325,6 +325,7 @@ class OalUsbCarPlayRuntime(
         com.openautolink.carplaylab.metadata.CarPlayMetadataIdentification.bootstrapSubscriptions(Iap2ControlMessages.subscriptions())
             .forEach { active();csm.send(it,5000) }
         val readyDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(120)
+        var endpointReceipts=0
         while(!canceled.get() && !csm.isClosed) {
             active()
             // Handoff is exact; this worker never receives CSM again after ownership transfer.
@@ -339,9 +340,17 @@ class OalUsbCarPlayRuntime(
             val frame=csm.recv(500) ?: continue
             if(vehicleBootstrap.handle(frame)) continue
             if(frame.messageId==0x4300) {
-                csm.send(Iap2CarPlayMessages.startSession(wiredIpv6Addresses=listOf(address),airPlayPort=projection.port,
+                val requestMonoNanos=System.nanoTime()
+                // Already on the USB owner worker. Await this exact frame, not earlier queued work.
+                csm.sendAndAwaitWritten(Iap2CarPlayMessages.startSession(wiredIpv6Addresses=listOf(address),airPlayPort=projection.port,
                     deviceIdentifier=identity,publicKey=projection.publicKeyHex,sourceVersion="950.7.1"),5000)
-                status("CarPlay USB stage=endpoint result=sent")
+                val writtenReceiptMonoNanos=System.nanoTime()
+                active()
+                if(endpointReceipts<4) {
+                    endpointReceipts++
+                    status("CarPlay USB stage=endpoint result=written requestMonoNs=$requestMonoNanos " +
+                        "writtenReceiptMonoNs=$writtenReceiptMonoNanos writeAwaitElapsedUs=${(writtenReceiptMonoNanos-requestMonoNanos)/1_000}")
+                }
             }
         }
     }

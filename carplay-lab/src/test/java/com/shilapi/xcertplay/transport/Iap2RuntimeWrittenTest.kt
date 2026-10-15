@@ -163,6 +163,31 @@ class Iap2RuntimeWrittenTest {
         } finally { runCatching { a.close() }; runCatching { b.close() } }
     }
 
+    @Test fun wiredEndpointReceiptWaitsForExact4301StreamWrite() {
+        val listener = ServerSocket(0)
+        val left = Stream(Socket("127.0.0.1", listener.localPort))
+        val right = Stream(listener.accept()); listener.close()
+        val a = Iap2Session.open(left); val b = Iap2Session.open(right)
+        val done = CountDownLatch(1)
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable>()
+        var worker: Thread? = null
+        try {
+            assertTrue(a.awaitReady(3000)); assertTrue(b.awaitReady(3000))
+            left.block = true
+            worker = Thread {
+                try { a.sendAndAwaitWritten(Iap2Frame(0x4301, byteArrayOf(1, 2, 3)), 3000) }
+                catch (t: Throwable) { failure.set(t) }
+                finally { done.countDown() }
+            }.apply { start() }
+            assertTrue(left.entered.await(1, TimeUnit.SECONDS))
+            assertFalse("queue admission must not receipt endpoint write", done.await(100, TimeUnit.MILLISECONDS))
+            assertNull(b.recv(100))
+            left.release.countDown()
+            assertTrue(done.await(1, TimeUnit.SECONDS)); assertNull(failure.get())
+            assertEquals(0x4301, b.recv(1000)?.messageId)
+        } finally { left.release.countDown(); runCatching { a.close() }; runCatching { b.close() }; worker?.join(1000) }
+    }
+
     @Test fun synchronousRuntimeSendCannotClaimTransmissionBeforeActualStreamWrite() {
         val listener = ServerSocket(0)
         val left = Stream(Socket("127.0.0.1", listener.localPort))

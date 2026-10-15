@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.524
+
+### CarPlay startup diagnostics and bounded writes
+- Bound USB NCM writes so a stalled endpoint cannot wait indefinitely. Report control-listener timing and endpoint-write receipts without claiming that receipt proves peer consumption or first video.
+- Preserve USB authorization, session ownership, first-video recovery and admission checks. Startup timing and sustained projection still require vehicle verification.
+
+### Log-upload token visibility
+- Add an accessible Show/Hide upload token action. Tokens start masked; disclosure is local, resets when leaving/reopening the field, and does not persist or change the token.
+
+### OAL interface size
+- Add Normal, Large, and Extra Large sizes for OAL menus, text, and controls, independent of Android Auto/CarPlay stream settings. Apply immediately without reconnecting and preserve the system font-size preference.
+- Keep settings navigation scrollable at larger sizes and use the available settings-pane width. Normal preserves the existing size; Large is the recommended option when the car UI is too small.
+
+### Floating-control recovery
+- Measure floating buttons independently so shrinking the display does not squeeze later buttons or their icons away. Default positions wrap into extra columns when needed.
+- Keep a fixed OAL controls menu separate from draggable positions. It provides Settings and every enabled/supported action even when saved buttons overlap; Restore button positions resets only overlay placements, including disabled controls.
+- Reproject saved positions from known layout geometry instead of inferring anchors from already-offset buttons. Cancel stale drags when the available area changes.
+- On windows too small for the full set of buttons, use the fixed menu rather than shrinking or stacking inaccessible controls.
+- Bound controls to the clipped, system-bar/cutout-safe window area without changing the video viewport. Keep them above the Stats panel and preserve physical placement in right-to-left layouts.
+- Does not change Android Auto/CarPlay stream scaling, touch mapping, connection behavior, or other saved settings. Vehicle confirmation is still required.
+
 ## 0.1.523
 
 ### CarPlay first-video recovery

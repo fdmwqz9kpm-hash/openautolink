@@ -1,5 +1,7 @@
 package com.openautolink.app.ui.projection
 
+import com.openautolink.app.ui.components.OalAlertDialog
+
 import android.annotation.SuppressLint
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -124,7 +126,7 @@ private fun UsbHotPlugSwitchDialog(
     onSwitch: () -> Unit,
     onStay: () -> Unit,
 ) {
-    androidx.compose.material3.AlertDialog(
+    OalAlertDialog(
         modifier = Modifier.testTag("usbHotPlugPrompt"),
         onDismissRequest = onStay,
         title = { Text("USB phone connected") },
@@ -225,7 +227,7 @@ fun ProjectionScreen(
     // Keep the current Surface and the sibling safe-area editor in their existing composition.
     if (!showSettings && !showDiagnostics && !showCarPlaySafeEditor) {
         if (usbHotPlugPrompt == null) usbSwitchFailure?.let { guidance ->
-            androidx.compose.material3.AlertDialog(
+            OalAlertDialog(
                 modifier = Modifier.testTag("usbSwitchFailure"),
                 onDismissRequest = viewModel::dismissUsbSwitchFailure,
                 title = { Text("USB switch paused") },
@@ -284,7 +286,7 @@ fun ProjectionScreen(
         }
 
         if (!showSettings && !showDiagnostics && usbHotPlugPrompt == null && !showUsbPicker) carPlayState.failure?.let { failure ->
-            androidx.compose.material3.AlertDialog(
+            OalAlertDialog(
                 modifier = Modifier.testTag("carPlayFailure"),
                 onDismissRequest = viewModel::dismissCarPlayFailure,
                 title = { Text("CarPlay connection failed") },
@@ -704,19 +706,6 @@ fun ProjectionScreen(
             }
         }
 
-        ProjectionOverlayControls(
-            uiState = uiState,
-            onSettings = { showSettings = true },
-            onStats = viewModel::toggleStats,
-            onReconnect = onReconnect,
-            modifier = Modifier.align(Alignment.BottomEnd),
-            onSwitchPhone = if (PhoneSwitcherPolicy.visible(directTransport, connectionMode, uiState.overlayPhoneSwitchButton)) ({ viewModel.showCarHotspotChooser() }) else null,
-            carHotspotSwitching = carHotspotSwitching,
-            onFileLogging = viewModel::toggleFileLogging,
-            onUpload = viewModel::uploadLogsNow,
-            onSimulateIgnition = viewModel::simulateIgnitionCycle,
-        )
-
         // Stats overlay panel — bottom-left
         if (uiState.showStats) {
             VideoStatsOverlay(
@@ -734,6 +723,19 @@ fun ProjectionScreen(
                     .padding(12.dp)
             )
         }
+
+        ProjectionOverlayControls(
+            uiState = uiState,
+            onSettings = { showSettings = true },
+            onStats = viewModel::toggleStats,
+            onReconnect = onReconnect,
+            modifier = Modifier.align(Alignment.BottomEnd),
+            onSwitchPhone = if (PhoneSwitcherPolicy.visible(directTransport, connectionMode, uiState.overlayPhoneSwitchButton)) ({ viewModel.showCarHotspotChooser() }) else null,
+            carHotspotSwitching = carHotspotSwitching,
+            onFileLogging = viewModel::toggleFileLogging,
+            onUpload = viewModel::uploadLogsNow,
+            onSimulateIgnition = viewModel::simulateIgnitionCycle,
+        )
 
         // Settings overlay — slides in from left, video keeps playing underneath
         AnimatedVisibility(

@@ -241,6 +241,8 @@ class ProjectionReceiver(
         try {
             while (!closed.get()) {
                 val socket = bound.accept()
+                // Capture the actual accept boundary, not the later asynchronous status delivery.
+                val acceptedMonoNanos = System.nanoTime()
                 synchronized(lock) {
                     if (closed.get() || admissionRevoked.get() || network == null && policy?.allows(socket.inetAddress) != true ||
                         sessions.size >= (if (network == null) 2 else 1) || admittedCount >= 32) {
@@ -270,7 +272,7 @@ class ProjectionReceiver(
                             return@synchronized
                         }
                         sessions.add(session); allSessions.add(session)
-                        status("CarPlay network stage=control-accepted authentication=pending")
+                        status("CarPlay network stage=control-accepted authentication=pending acceptedMonoNs=$acceptedMonoNanos")
                         // Engine attachment receives this exact session, never the latest accepted one.
                         session.start()
                         deadlines.schedule({ if (!session.controlAuthenticated) session.close() }, 30, TimeUnit.SECONDS)

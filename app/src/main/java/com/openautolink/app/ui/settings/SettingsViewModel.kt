@@ -39,6 +39,7 @@ data class SettingsUiState(
     val videoFps: Int = AppPreferences.DEFAULT_VIDEO_FPS,
     val galVersion: String = AppPreferences.DEFAULT_GAL_VERSION,
     val displayMode: String = AppPreferences.DEFAULT_DISPLAY_MODE,
+    val oalUiScalePercent: Int = AppPreferences.DEFAULT_OAL_UI_SCALE_PERCENT,
     val micSource: String = AppPreferences.DEFAULT_MIC_SOURCE,
     val btMacOverride: String = AppPreferences.DEFAULT_BT_MAC_OVERRIDE,
     val videoScalingMode: String = AppPreferences.DEFAULT_VIDEO_SCALING_MODE,
@@ -353,6 +354,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         preferences.overlayPhoneSwitchButton,
         preferences.overlayReconnectButton,
         preferences.evContributionConsent,
+        preferences.oalUiScalePercent,
     ) { values: Array<Any> ->
         SettingsUiState(
             videoAutoNegotiate = values[0] as Boolean,
@@ -406,6 +408,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             overlayPhoneSwitchButton = values[48] as Boolean,
             overlayReconnectButton = values[49] as Boolean,
             evContributionConsent = values[50] as Boolean,
+            oalUiScalePercent = values[51] as Int,
         )
     }.stateIn(
         viewModelScope,
@@ -627,6 +630,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun updateGalVersion(version: String) {
         viewModelScope.launch { preferences.setGalVersion(version) }
+    }
+
+    /** Local UI preference applies live; never enters the projection reconnect transaction. */
+    fun updateOalUiScalePercent(percent: Int) {
+        viewModelScope.launch { preferences.setOalUiScalePercent(percent) }
     }
 
     fun updateDisplayMode(mode: String) {

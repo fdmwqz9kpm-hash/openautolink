@@ -39,6 +39,10 @@ class NcmUsbBridge internal constructor(
     private var failure: IphoneUsbException? = null
     private var sequence = 0
     private var loggedWriteTimeout = false
+    // Owned by writeLock; only a complete accepted NTB establishes readiness.
+    private var bulkOutAccepted = false
+    private var startupWriteAttempts = 0L
+    private val openedMonoNanos = System.nanoTime()
     private val frames = ArrayDeque<ByteArray>()
     private var queuedBytes = 0
     private var buffered = ByteArray(0)
@@ -69,7 +73,32 @@ class NcmUsbBridge internal constructor(
             this.sequence.also { this.sequence = (this.sequence + 1) and 0xffff }
         }
         val block = Ntb16Codec.build(frame, sequence)
-        val transferred = connection.bulkTransfer(outEndpoint, block, block.size, timeoutMillis)
+        // A NAKed JNI byte-array transfer can hold up ART's thread flip and iAP2 startup.
+        // Keep the existing drop policy; do not retain/replay failed packets.
+        val writeTimeoutMillis = if (bulkOutAccepted) timeoutMillis else minOf(timeoutMillis, 20)
+        val writeStartMonoNanos = if (!bulkOutAccepted) System.nanoTime() else 0L
+        // Native USB must not hold stateLock: close/failure can retire this bridge while it waits.
+        val transferred = connection.bulkTransfer(outEndpoint, block, block.size, writeTimeoutMillis)
+        val diagnostic = synchronized(stateLock) {
+            // Linearize completion/readiness and receipt admission with exact-owner retirement.
+            // In particular, a full native return after close is not a live readiness receipt.
+            checkOpenLocked()
+            val receipt = if (!bulkOutAccepted) {
+                if (startupWriteAttempts < Long.MAX_VALUE) startupWriteAttempts++
+                val completedMonoNanos = System.nanoTime()
+                // At most four early attempts plus first FULL success, even if readiness comes later.
+                if (startupWriteAttempts <= 4 || transferred == block.size) {
+                    "NCM startup attempt=$startupWriteAttempts timeoutMs=$writeTimeoutMillis " +
+                        "transferred=$transferred blockBytes=${block.size} ready=${if (transferred == block.size) 1 else 0} " +
+                        "writeStartMonoNs=$writeStartMonoNanos writeElapsedUs=${(completedMonoNanos-writeStartMonoNanos)/1_000} " +
+                        "sinceOpenUs=${(completedMonoNanos-openedMonoNanos)/1_000}"
+                } else null
+            } else null
+            if (transferred == block.size) bulkOutAccepted = true
+            receipt
+        }
+        // Deliver only an admitted receipt, outside stateLock: sinks may call close or throw.
+        diagnostic?.let { runCatching { onDiagnostic(it) } }
         // Before StartCarPlaySession the phone keeps the NCM data path NAKed. Android reports the
         // resulting timeout as -1; it is not a detach and later packets must be allowed to retry.
         if (transferred <= 0) {

@@ -12,7 +12,8 @@ class KeyRemapDialogContractTest {
         val source = projectFile(
             "app/src/main/java/com/openautolink/app/ui/settings/SettingsScreen.kt",
         ).readText()
-        val dialog = source.substringAfter("androidx.compose.material3.AlertDialog(")
+        assertTrue(source.contains("OalAlertDialog("))
+        val dialog = source.substringAfter("OalAlertDialog(")
             .substringBefore("@Composable\nprivate fun AudioTab")
         val textContent = dialog.substringAfter("text = {")
             .substringBefore("confirmButton = {")
@@ -30,7 +31,8 @@ class KeyRemapDialogContractTest {
         val source = projectFile(
             "app/src/main/java/com/openautolink/app/ui/settings/SettingsScreen.kt",
         ).readText()
-        val dialog = source.substringAfter("androidx.compose.material3.AlertDialog(")
+        assertTrue(source.contains("OalAlertDialog("))
+        val dialog = source.substringAfter("OalAlertDialog(")
             .substringBefore("@Composable\nprivate fun AudioTab")
 
         assertTrue(

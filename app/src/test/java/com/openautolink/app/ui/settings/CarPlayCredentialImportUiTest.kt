@@ -15,7 +15,11 @@ class CarPlayCredentialImportUiTest {
         val ui = source("CarPlaySettings")
         assertTrue(ui.contains("ActivityResultContracts.OpenDocument()"))
         assertTrue(ui.contains("Import authentication identity"))
-        assertTrue(ui.contains("verticalScroll(rememberScrollState())"))
+        // Scrolling belongs to the whole dialog now, including its actions.
+        assertTrue(ui.contains("OalAlertDialog(onDismissRequest ="))
+        val dialog = source("../components/OalAlertDialog")
+        assertTrue(dialog.contains("verticalScroll(rememberScrollState())"))
+        assertTrue(dialog.contains("confirmButton()"))
         assertTrue(ui.contains("Import selected pair"))
         assertTrue(ui.contains("viewModel.importCarPlayCredentials("))
         assertFalse(ui.contains("fresh provisioning is unavailable"))

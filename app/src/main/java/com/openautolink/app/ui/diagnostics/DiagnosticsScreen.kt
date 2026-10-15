@@ -1,5 +1,7 @@
 package com.openautolink.app.ui.diagnostics
 
+import com.openautolink.app.ui.components.OalAlertDialog
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -61,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.openautolink.app.ui.theme.OalUiScale
 
 private enum class DiagnosticsTab(
     val title: String,
@@ -77,6 +80,14 @@ private enum class DiagnosticsTab(
 fun DiagnosticsScreen(
     viewModel: DiagnosticsViewModel = viewModel(),
     onBack: () -> Unit = {},
+) {
+    OalUiScale { DiagnosticsScreenContent(viewModel, onBack) }
+}
+
+@Composable
+private fun DiagnosticsScreenContent(
+    viewModel: DiagnosticsViewModel,
+    onBack: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(DiagnosticsTab.SYSTEM) }
@@ -107,10 +118,10 @@ fun DiagnosticsScreen(
                 }
 
                 NavigationRail(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
                     containerColor = MaterialTheme.colorScheme.background,
+                    windowInsets = WindowInsets(0, 0, 0, 0),
                 ) {
-                    Spacer(modifier = Modifier.weight(1f))
                     DiagnosticsTab.entries.forEach { tab ->
                         NavigationRailItem(
                             selected = selectedTab == tab,
@@ -125,7 +136,6 @@ fun DiagnosticsScreen(
                             modifier = Modifier.padding(vertical = 8.dp),
                         )
                     }
-                    Spacer(modifier = Modifier.weight(1f))
                 }
             }
 
@@ -1121,7 +1131,7 @@ private fun GmReconSection(debug: DebugProbeState, viewModel: DiagnosticsViewMod
     }
 
     if (showEnableDialog) {
-        androidx.compose.material3.AlertDialog(
+        OalAlertDialog(
             onDismissRequest = { showEnableDialog = false },
             title = { Text("Enable ADB via RDMS?") },
             text = {

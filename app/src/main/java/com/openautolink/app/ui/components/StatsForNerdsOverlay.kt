@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.sp
 fun StatsForNerdsOverlay(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
-) {
+) = com.openautolink.app.ui.theme.OalUiScale {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))

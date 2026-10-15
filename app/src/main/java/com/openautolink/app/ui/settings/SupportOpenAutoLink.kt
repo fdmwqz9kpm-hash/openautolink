@@ -40,6 +40,7 @@ import com.openautolink.app.R
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.openautolink.app.ui.theme.OalUiScale
 
 /** Passive, local-only support UI. Opening/closing never applies settings or retires projection. */
 @Composable
@@ -77,7 +78,9 @@ fun SupportOpenAutoLink(modifier: Modifier = Modifier) {
             onDismissRequest = { showQr = false },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            SupportQrDialog(onClose = { showQr = false })
+            OalUiScale {
+                SupportQrDialog(onClose = { showQr = false })
+            }
         }
     }
 }
@@ -96,40 +99,45 @@ private fun SupportTitle(modifier: Modifier = Modifier) {
 
 @Composable
 private fun SupportQrDialog(onClose: () -> Unit) {
-    Surface(
-        modifier = Modifier.padding(24.dp).widthIn(max = 760.dp).fillMaxWidth().heightIn(max = 560.dp)
-            .testTag("supportQrDialog"),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surface,
-    ) {
-        BoxWithConstraints(modifier = Modifier.padding(24.dp)) {
-            val wide = maxWidth >= 560.dp
-            val qrSize = minOf(
-                if (wide) 320.dp else 280.dp,
-                maxWidth,
-                (maxHeight - if (wide) 80.dp else 180.dp).coerceAtLeast(160.dp),
-            )
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                // Close stays reachable even on short screens or at large accessibility text sizes.
-                Column(
-                    modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    if (wide) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(24.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
+    BoxWithConstraints {
+        // Two vertical padding layers must leave a full Close target at large OAL sizes.
+        val verticalPadding = minOf(24.dp, ((maxHeight - 48.dp) / 4).coerceAtLeast(0.dp))
+        Surface(
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = verticalPadding)
+                .widthIn(max = 760.dp).fillMaxWidth().heightIn(max = 560.dp)
+                .testTag("supportQrDialog"),
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            BoxWithConstraints(modifier = Modifier.padding(horizontal = 24.dp, vertical = verticalPadding)) {
+                val wide = maxWidth >= 560.dp
+                val qrSize = minOf(
+                    if (wide) 320.dp else 280.dp,
+                    maxWidth,
+                    (maxHeight - if (wide) 80.dp else 180.dp).coerceAtLeast(160.dp),
+                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // Close stays reachable even on short screens or at large accessibility text sizes.
+                    Column(
+                        modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        if (wide) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(24.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                SupportQrImage(qrSize)
+                                SupportQrCopy(Modifier.weight(1f))
+                            }
+                        } else {
+                            SupportQrCopy(centered = true)
                             SupportQrImage(qrSize)
-                            SupportQrCopy(Modifier.weight(1f))
                         }
-                    } else {
-                        SupportQrCopy(centered = true)
-                        SupportQrImage(qrSize)
                     }
-                }
-                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.End).testTag("supportClose")) {
-                    Text("Close")
+                    TextButton(onClick = onClose, modifier = Modifier.align(Alignment.End).heightIn(min = 48.dp).testTag("supportClose")) {
+                        Text("Close")
+                    }
                 }
             }
         }

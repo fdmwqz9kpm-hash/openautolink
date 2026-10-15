@@ -5,14 +5,21 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.openautolink.app.data.AppPreferences
 
 private val DarkColorScheme = darkColorScheme(
     primary = Color(0xFF4FC3F7),       // Light blue accent
@@ -45,7 +52,21 @@ private val AppTypography = Typography(
 )
 
 @Composable
-fun OpenAutoLinkTheme(content: @Composable () -> Unit) {
+fun OpenAutoLinkTheme(
+    oalUiScalePercent: Int? = null,
+    content: @Composable () -> Unit,
+) {
+    // Optional override keeps previews/tests independent of application services.
+    val percent = if (oalUiScalePercent != null || LocalInspectionMode.current) {
+        oalUiScalePercent ?: AppPreferences.DEFAULT_OAL_UI_SCALE_PERCENT
+    } else {
+        val context = LocalContext.current
+        val preferences = remember(context.applicationContext) { AppPreferences.getInstance(context) }
+        val stored by preferences.oalUiScalePercent.collectAsStateWithLifecycle(
+            initialValue = AppPreferences.DEFAULT_OAL_UI_SCALE_PERCENT,
+        )
+        stored
+    }
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
@@ -61,9 +82,13 @@ fun OpenAutoLinkTheme(content: @Composable () -> Unit) {
         }
     }
 
-    MaterialTheme(
-        colorScheme = DarkColorScheme,
-        typography = AppTypography,
-        content = content
-    )
+    CompositionLocalProvider(
+        LocalOalUiScalePercent provides AppPreferences.normalizeOalUiScalePercent(percent),
+    ) {
+        MaterialTheme(
+            colorScheme = DarkColorScheme,
+            typography = AppTypography,
+            content = content,
+        )
+    }
 }
