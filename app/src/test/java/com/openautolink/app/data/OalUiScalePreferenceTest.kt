@@ -19,9 +19,9 @@ import org.junit.rules.TemporaryFolder
 class OalUiScalePreferenceTest {
     @get:Rule val temporary = TemporaryFolder()
 
-    @Test fun `default remains normal and each size survives reopening the datastore`() = runBlocking {
+    @Test fun `default is large and each explicit size survives reopening the datastore`() = runBlocking {
         val file = File(temporary.root, "settings.preferences_pb")
-        withStore(file) { prefs, _ -> assertEquals(100, prefs.oalUiScalePercent.first()) }
+        withStore(file) { prefs, _ -> assertEquals(125, prefs.oalUiScalePercent.first()) }
         for (percent in listOf(100, 125, 150)) {
             withStore(file) { prefs, _ -> prefs.setOalUiScalePercent(percent) }
             withStore(file) { prefs, _ -> assertEquals(percent, prefs.oalUiScalePercent.first()) }

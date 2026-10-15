@@ -119,13 +119,13 @@ class OverlaySafeAreaLayoutTest {
         compose.waitForIdle()
         val clip = compose.onNodeWithTag("clip").fetchSemanticsNode().boundsInRoot
         val content = compose.onNodeWithTag("content").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-        assertEquals(clip.left + 8f, content.left, 0.01f)
-        assertEquals(clip.top + 8f, content.top, 0.01f)
-        assertEquals(clip.right - 8f, content.right, 0.01f)
-        assertEquals(clip.bottom - 8f, content.bottom, 0.01f)
+        assertEquals(clip.left + 2f, content.left, 0.01f)
+        assertEquals(clip.top + 2f, content.top, 0.01f)
+        assertEquals(clip.right - 2f, content.right, 0.01f)
+        assertEquals(clip.bottom - 2f, content.bottom, 0.01f)
     }
 
-    @Test fun `stable inset updates move controls without changing the video parent`() {
+    @Test fun `visible inset updates move controls without changing the video parent`() {
         lateinit var view: View
         compose.setContent {
             view = LocalView.current
@@ -147,20 +147,20 @@ class OverlaySafeAreaLayoutTest {
         }
         compose.waitForIdle()
         val first = compose.onNodeWithTag("content").fetchSemanticsNode().boundsInRoot
-        assertTrue("hidden bars still reserve stable left inset: $first", first.left >= 128f)
-        assertTrue("hidden bars still reserve stable top inset: $first", first.top >= 98f)
+        assertEquals("hidden bars must not reserve space", parentBefore.left + 2f, first.left, 0.01f)
+        assertEquals(parentBefore.top + 2f, first.top, 0.01f)
         compose.runOnIdle {
             val bars = WindowInsetsCompat.Type.systemBars()
             ViewCompat.dispatchApplyWindowInsets(view, WindowInsetsCompat.Builder()
-                .setInsets(bars, Insets.NONE)
+                .setInsets(bars, Insets.of(180, 150, 70, 110))
                 .setInsetsIgnoringVisibility(bars, Insets.of(180, 150, 70, 110))
-                .setVisible(bars, false)
+                .setVisible(bars, true)
                 .build())
         }
         compose.waitForIdle()
         val second = compose.onNodeWithTag("content").fetchSemanticsNode().boundsInRoot
-        assertEquals(first.left + 60f, second.left, 0.01f)
-        assertEquals(first.top + 60f, second.top, 0.01f)
+        assertEquals(first.left + 180f, second.left, 0.01f)
+        assertEquals(first.top + 150f, second.top, 0.01f)
         assertEquals(parentBefore, compose.onNodeWithTag("parent").fetchSemanticsNode().boundsInRoot)
     }
 
@@ -186,9 +186,9 @@ class OverlaySafeAreaLayoutTest {
         val outer = compose.onNodeWithTag("outer").fetchSemanticsNode().boundsInRoot
         val content = compose.onNodeWithTag("content").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         assertEquals(parent, outer)
-        assertEquals(parent.left + 8f, content.left, 0.01f)
-        assertEquals(parent.top + 8f, content.top, 0.01f)
-        assertEquals(parent.right - 8f, content.right, 0.01f)
-        assertEquals(parent.bottom - 8f, content.bottom, 0.01f)
+        assertEquals(parent.left + 2f, content.left, 0.01f)
+        assertEquals(parent.top + 2f, content.top, 0.01f)
+        assertEquals(parent.right - 2f, content.right, 0.01f)
+        assertEquals(parent.bottom - 2f, content.bottom, 0.01f)
     }
 }

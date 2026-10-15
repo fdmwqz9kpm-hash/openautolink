@@ -59,10 +59,13 @@ class IndependentConnectionUiContract(unittest.TestCase):
 
     def test_usb_confirmation_has_priority_over_other_connection_modals(self):
         projection = function(source("projection/ProjectionScreen.kt"), "ProjectionScreen")
-        self.assertTrue('if (!showSettings && !showDiagnostics && usbHotPlugPrompt == null)' in projection,
-                        'CarPlay failure dialog must not cover a pending USB confirmation')
-        self.assertTrue('if (usbHotPlugPrompt == null && UsbPickerVisibility.shouldShow(' in projection,
-                        'Existing USB picker must not compete with the confirmation')
+        self.assertRegex(projection,
+                         r'if \(!showSettings && !showDiagnostics && usbHotPlugPrompt == null && !showUsbPicker\) carPlayState\.failure',
+                         'CarPlay failure dialog must not cover a pending USB confirmation or picker')
+        picker = projection.split('val showUsbPicker =', 1)[1].split('LaunchedEffect', 1)[0]
+        self.assertIn('usbHotPlugPrompt == null &&', picker,
+                      'Existing USB picker must not compete with the confirmation')
+        self.assertIn('UsbPickerVisibility.shouldShow(', picker)
 
     def test_usb_confirmation_is_common_to_both_projection_branches(self):
         screen = source("projection/ProjectionScreen.kt")

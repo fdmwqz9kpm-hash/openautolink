@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### One movable OAL controls menu
+- Replace separate floating buttons with one OAL-logo button. Tap for supported actions; hold and drag to reposition it. Start centered, with a one-time drag hint.
+- Reclaim the fixed recovery strip and hidden-system-bar space while respecting visible system controls and cutouts. Preserve preferred placement across temporary window, inset and UI-size changes; Restore button positions recenters the logo.
+- Keep diagnostic/maintainer enable gates. Normal menu actions no longer depend on retired floating-button visibility settings, including previously hidden Phone Switcher buttons.
+- Offer best-effort launcher re-entry recovery without interrupting fresh startup. Actual GM launcher delivery remains unverified.
+- Default native OAL interface size to 125% without overriding saved choices. Display the build version in Settings with a small internet-enabled Wi-Fi update reminder.
+- Leave Android Auto/CarPlay video geometry, projected touch mapping and stream scaling unchanged. Vehicle display-transition acceptance remains pending.
+
 ## 0.1.524
 
 ### CarPlay startup diagnostics and bounded writes

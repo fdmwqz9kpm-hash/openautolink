@@ -8,9 +8,11 @@ import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,13 +40,16 @@ private data class OverlayWindowGeometry(
     val windowBounds: Rect,
 )
 
+/** Stable window origin of the safe-area child, not of a moving control. */
+internal val LocalOverlaySafeAreaOrigin = compositionLocalOf { Offset.Zero }
+
 /**
  * A controls-only viewport; does not change video measurement, scaling, or insets.
  *
  * Intersect in window coordinates BEFORE converting to parent-local coordinates. In
  * particular, a parent that already avoids the bars must not be inset a second time.
- * Stable Compose insets keep controls away from temporarily hidden system chrome and
- * update reactively, unlike a captured View.rootWindowInsets value.
+ * Visible Compose insets reclaim hidden chrome space and update reactively.
+ * Cutouts remain excluded even in immersive mode.
  *
  * There is intentionally no full-screen pointer handler. Empty space remains available
  * to the projected app. Children receive only the visible safe area's constraints.
@@ -58,14 +63,15 @@ internal fun OverlaySafeArea(
     val view = LocalView.current
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
-    val safeInsets = WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout)
+    val safeInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
     // These are physical left/right, not start/end; layoutDirection is used only by
     // the WindowInsets API to resolve any directional implementation.
     val leftInset = safeInsets.getLeft(density, layoutDirection)
     val topInset = safeInsets.getTop(density)
     val rightInset = safeInsets.getRight(density, layoutDirection)
     val bottomInset = safeInsets.getBottom(density)
-    val marginPx = with(density) { 8.dp.toPx() }
+    // Physical spacing must not grow with the OAL interface size.
+    val marginPx = 2f * view.resources.displayMetrics.density
     var geometry by remember(view) { mutableStateOf<OverlayWindowGeometry?>(null) }
 
     Box(
@@ -103,7 +109,7 @@ internal fun OverlaySafeArea(
         }
         // Until measured, or when completely clipped, do not create actionable
         // off-screen controls. Never substitute the larger, unclipped parent bounds.
-        if (bounds != null) {
+        if (bounds != null && measured != null) {
             Box(
                 Modifier
                     .absoluteOffset { IntOffset(bounds.left, bounds.top) }
@@ -113,8 +119,12 @@ internal fun OverlaySafeArea(
                     )
                     .clipToBounds(),
                 contentAlignment = AbsoluteAlignment.TopLeft,
-                content = content,
-            )
+            ) {
+                CompositionLocalProvider(LocalOverlaySafeAreaOrigin provides
+                    (measured.origin + Offset(bounds.left.toFloat(), bounds.top.toFloat()))) {
+                    content()
+                }
+            }
         }
     }
 }
