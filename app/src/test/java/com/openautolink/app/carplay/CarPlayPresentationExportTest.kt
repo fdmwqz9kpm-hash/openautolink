@@ -8,9 +8,20 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [32])
+@Config(application = android.app.Application::class, sdk = [32])
 @ConscryptMode(ConscryptMode.Mode.OFF)
 class CarPlayPresentationExportTest {
+    @Test fun applicationFixtureDoesNotBootProcessServices() {
+        // Config.NONE is ignored by Robolectric's AGP Build System API. Check
+        // the actual application, not just the annotation: OalApplication starts
+        // process-owned IO work that can outlive this test's Android sandbox.
+        assertEquals(
+            "This fixture must not boot OalApplication process services",
+            android.app.Application::class.java,
+            org.robolectric.RuntimeEnvironment.getApplication().javaClass,
+        )
+    }
+
     @Test fun presentationReceiptsSurviveRealSanitizerAndDiagnosticArchive() {
         val receipts = listOf(
             "media stage=presentation-attached generation=2",

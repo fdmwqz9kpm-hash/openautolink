@@ -18,8 +18,19 @@ import java.util.concurrent.*
 
 @RunWith(RobolectricTestRunner::class)
 @org.robolectric.annotation.ConscryptMode(org.robolectric.annotation.ConscryptMode.Mode.OFF)
-@Config(sdk=[32], manifest=Config.NONE)
+@Config(application = android.app.Application::class, sdk=[32], manifest=Config.NONE)
 class CarPlayAudioOwnershipExportTest {
+    @Test fun applicationFixtureDoesNotBootProcessServices() {
+        // Config.NONE is ignored by Robolectric's AGP Build System API. Check
+        // the actual application, not just the annotation: OalApplication starts
+        // process-owned IO work that can outlive this test's Android sandbox.
+        assertEquals(
+            "This fixture must not boot OalApplication process services",
+            android.app.Application::class.java,
+            org.robolectric.RuntimeEnvironment.getApplication().javaClass,
+        )
+    }
+
     private fun field(target: Any, name: String) = target.javaClass.getDeclaredField(name).apply { isAccessible=true }
     private fun change(request: AudioFocusRequest, change: Int) {
         val listener=AudioFocusRequest::class.java.getDeclaredMethod("getOnAudioFocusChangeListener").invoke(request) as AudioManager.OnAudioFocusChangeListener

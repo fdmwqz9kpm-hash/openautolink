@@ -10,9 +10,20 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.ConscryptMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(manifest = Config.NONE, sdk = [32])
+@Config(application = android.app.Application::class, manifest = Config.NONE, sdk = [32])
 @ConscryptMode(ConscryptMode.Mode.OFF)
 class OverlayButtonPositionStoreTest {
+    @Test fun applicationFixtureDoesNotBootProcessServices() {
+        // Config.NONE is ignored by Robolectric's AGP Build System API. Check
+        // the actual application, not just the annotation: OalApplication starts
+        // process-owned IO work that can outlive this test's Android sandbox.
+        assertEquals(
+            "This fixture must not boot OalApplication process services",
+            android.app.Application::class.java,
+            org.robolectric.RuntimeEnvironment.getApplication().javaClass,
+        )
+    }
+
     private fun preferences() = RuntimeEnvironment.getApplication().getSharedPreferences("overlay_positions", Context.MODE_PRIVATE)
         .also { it.edit().clear().commit() }
 

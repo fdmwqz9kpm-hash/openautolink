@@ -10,6 +10,15 @@
 - Default native OAL interface size to 125% without overriding saved choices. Display the build version in Settings with a small internet-enabled Wi-Fi update reminder.
 - Leave Android Auto/CarPlay video geometry, projected touch mapping and stream scaling unchanged. Vehicle display-transition acceptance remains pending.
 
+### Bounded CarPlay startup diagnostics
+- Add sanitized startup packet classifications and native USB write timing to distinguish forwarding, write completion, and control-connection admission.
+- Exclude diagnostic observer work from native write timing; stop new reservations at accepted-owner admission, before fallible session setup. Keep disabled/capped observations out of the diagnostic monitor.
+- Preserve exact-owner retirement and bounded export in uploaded logs without raw network identities or payload bytes. No new retries, framing, timeout policy, authentication or audio changes; this does not claim faster startup or phone consumption.
+
+### Test isolation and compatibility
+- Keep JVM component fixtures from unintentionally starting process-wide Bluetooth services; add runtime application-identity regressions without weakening token-visibility assertions.
+- No companion source or behavior changes. The matching public companion APK is version-aligned only; these car-side changes do not require a companion update.
+
 ## 0.1.524
 
 ### CarPlay startup diagnostics and bounded writes

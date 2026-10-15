@@ -12,9 +12,20 @@ import org.robolectric.annotation.ConscryptMode
 
 /** Intent/state proof only: an OEM must actually deliver a launcher intent. */
 @RunWith(RobolectricTestRunner::class)
-@Config(manifest = Config.NONE, sdk = [32])
+@Config(application = android.app.Application::class, manifest = Config.NONE, sdk = [32])
 @ConscryptMode(ConscryptMode.Mode.OFF)
 class LauncherRecoveryTest {
+    @Test fun applicationFixtureDoesNotBootProcessServices() {
+        // Config.NONE is ignored by Robolectric's AGP Build System API. Check
+        // the actual application, not just the annotation: OalApplication starts
+        // process-owned IO work that can outlive this test's Android sandbox.
+        assertEquals(
+            "This fixture must not boot OalApplication process services",
+            android.app.Application::class.java,
+            org.robolectric.RuntimeEnvironment.getApplication().javaClass,
+        )
+    }
+
     private fun launcher() = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
     private fun saved(visible: Boolean) = Bundle().apply {
         putBoolean(LauncherRecovery.SAVED_VISIBLE, visible)
