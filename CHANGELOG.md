@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.526
+
+### Wired CarPlay mode selection
+- Distinguish confirmed CarPlay mode (USBMUX, NCM and Apple Ethernet) from a compatible USBMUX/NCM configuration that still needs the mode request. Reuse confirmed mode without requesting another switch.
+- Attempt one bounded mode transition when needed. Preserve older-peer rejection fallback only for the unchanged attached, permitted device and current owner; retain replacement consent and detach/cancellation fences.
+- Add finite mode-decision, transition-result and selected-descriptor receipts to uploaded logs. No raw device identifiers, packet replay, generic USB resets, audio or authentication changes.
+- Correct the Release APK badge to show actual release-event runs instead of a historical cancelled manual build; failed release builds still show red.
+- Full debug/release app, receiver and companion verification: 4,170 tests, zero failures/errors, two existing optional private replay skips. Independent exact-tree review passed. Physical first-connect/replug improvement and the cause of the prior vehicle failure remain unproven until vehicle testing.
+- No companion behavior changes; matching GitHub companion APK is version-aligned only.
+
 ## 0.1.525
 
 ### One movable OAL controls menu
