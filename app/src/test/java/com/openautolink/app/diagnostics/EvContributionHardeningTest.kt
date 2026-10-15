@@ -1367,10 +1367,12 @@ class EvContributionHardeningTest {
             override fun getResponseCode(): Int { entered.countDown(); released.await(5, TimeUnit.SECONDS); return 200 }
             override fun getInputStream() = "{}".byteInputStream()
         }
+        val pendingCancellation = java.util.concurrent.ConcurrentLinkedQueue<HttpURLConnection>()
         lateinit var deadline: () -> Unit
         val transport = EvContributionHttpTransport(
             openConnection = { connection },
             scheduleDeadline = { _, task -> deadline = task; EvContributionDeadline.Cancellable { } },
+            requestCancellation = { pendingCancellation.add(it) },
         )
         val worker = thread { runCatching { transport.send(
             "https://logs.example/upload", "token", "ev-class-test", q.pending().single().file,
@@ -1380,6 +1382,11 @@ class EvContributionHardeningTest {
         val timed = thread { deadline() }
         explicit.join(); timed.join(); worker.join(2_000)
         assertFalse(worker.isAlive)
+        // Worker interruption is synchronous; disconnect dispatch is not. Hold the
+        // dispatcher so this checks exactly-once ownership independently of scheduling.
+        assertEquals("one cancellation request despite racing cancellation", 1, pendingCancellation.size)
+        assertSame("cancellation stays bound after worker cleanup", connection, pendingCancellation.single())
+        pendingCancellation.remove().disconnect()
         assertEquals("one exact-owner disconnect despite racing cancellation", 1, disconnects.get())
     }
 

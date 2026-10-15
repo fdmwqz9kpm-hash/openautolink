@@ -44,14 +44,15 @@ class OverlayButtonPositionTest {
     /** Supplemental source wiring guard; rectangle/persistence behavior is tested above. */
     @Test fun `every shared AA CarPlay button receives measured parent geometry`() {
         val controls = java.io.File("src/main/java/com/openautolink/app/ui/components/ProjectionOverlayControls.kt").readText()
-        assertEquals(7, Regex("viewport = viewport,").findAll(controls).count())
-        assertTrue(controls.contains("modifier = modifier.fillMaxSize().onGloballyPositioned"))
+        assertEquals(7, Regex("add\\(\"overlay_").findAll(controls).count())
+        assertTrue(controls.contains("BoxWithConstraints("))
         val button = java.io.File("src/main/java/com/openautolink/app/ui/components/DraggableOverlayButton.kt").readText()
         assertTrue(button.contains(".absoluteOffset"))
         assertTrue(button.contains(".pointerInput(geometry, store)"))
         assertFalse(button.contains(".pointerInput(Unit)"))
-        assertTrue(button.contains("if (measured != geometry)"))
-        assertTrue(button.contains("store?.readOffset(measured, initialPx)"))
+        assertFalse("never infer anchor from offset coordinates", button.contains("positionInRoot"))
+        assertTrue(button.contains("remember(store, geometry)"))
+        assertTrue(button.contains("store.readOffset(geometry"))
         assertFalse("empty projection space must not intercept maps", controls.contains("pointerInput"))
     }
 

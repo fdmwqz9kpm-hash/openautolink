@@ -6,9 +6,6 @@ internal data class OverlayButtonPoint(val x: Float, val y: Float)
 
 private fun Float.finiteOrZero() = if (isFinite()) this else 0f
 
-/** The chrome-free projection parent, in root pixels (not video or column bounds). */
-internal data class OverlayButtonViewport(val left: Float, val top: Float, val width: Float, val height: Float)
-
 internal data class OverlayButtonGeometry(
     val parentWidth: Float,
     val parentHeight: Float,
@@ -45,6 +42,20 @@ internal data class OverlayButtonGeometry(
  * them once, on a measured layout, without resetting other preferences or controls.
  */
 internal class OverlayButtonPositionStore(private val prefs: SharedPreferences, private val key: String) {
+    companion object {
+        private val keys = listOf("overlay_settings", "overlay_switch_phone", "overlay_stats", "overlay_reconnect",
+            "overlay_file_log", "overlay_upload_logs", "overlay_simulate_ignition")
+
+        /** Explicit recovery clears placements, including disabled controls, never other preferences. */
+        fun resetAll(prefs: SharedPreferences) {
+            prefs.edit().also { editor ->
+                for (key in keys) for (suffix in listOf("_x", "_y", "_parent_x", "_parent_y")) {
+                    editor.remove(key + suffix)
+                }
+            }.apply()
+        }
+    }
+
     fun readOffset(geometry: OverlayButtonGeometry, defaultOffset: OverlayButtonPoint): OverlayButtonPoint {
         if (prefs.contains("${key}_parent_x") && prefs.contains("${key}_parent_y")) {
             return geometry.offsetFromFraction(OverlayButtonPoint(

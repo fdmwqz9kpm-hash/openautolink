@@ -15,6 +15,8 @@ object CarPlayAudioDiagnostics {
     private val accepted = Regex("BENCH_DIAG streamReply type=([0-9]{1,3}) port=$optional streamId=$optional")
     // Full-string matches: unknown fields, suffixes, control characters and upstream free text fail closed.
     private val schemas = listOf(
+        "NCM startup attempt=$number timeoutMs=[0-9]{1,10} transferred=-?[0-9]{1,10} blockBytes=[0-9]{1,10} ready=[01] writeStartMonoNs=$number writeElapsedUs=$number sinceOpenUs=$number",
+        "CarPlay USB stage=endpoint result=written requestMonoNs=$number writtenReceiptMonoNs=$number writeAwaitElapsedUs=$number",
         "CarPlay USB stage=(permission|usb-permission|replacement-permission|vpn-consent|reenumeration|usbmux|phone-identification|carkit|listener|endpoint|runtime) result=(pending|ready|accepted|sent)",
         "CarPlay USB stage=failed reason=(PERMISSION|TIMEOUT|SETUP|PASSWORD_PROTECTED|USER_DENIED|INVALID_RECORD|TRANSPORT_LOSS|TRUST_PENDING_TIMEOUT|CANCELLED|REMOTE_ERROR|INVALID_RESPONSE)",
         "CarPlay USB pairing stage=(connecting|host-buid|device-key|wifi-address|record-prepared|pair-requested|trust-pending|paired)",
@@ -31,7 +33,7 @@ object CarPlayAudioDiagnostics {
         "CarPlay network stage=bind-failed type=$failure",
         "CarPlay network stage=admission-unavailable reason=(explicit-enrollment-authorization-required|existing-controller-required)",
         "CarPlay network stage=accept-declined reason=peer-interface-scope",
-        "CarPlay network stage=control-accepted authentication=pending",
+        "CarPlay network stage=control-accepted authentication=pending( acceptedMonoNs=$number)?",
         "CarPlay network stage=authentication accepted=$bool",
         "CarPlay network stage=activation-skipped reason=trusted-control-peer-pending; phone initiation unverified",
         "CarPlay RFCOMM connecting · timeout 20s",

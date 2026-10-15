@@ -5,15 +5,13 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
+import com.openautolink.app.ui.components.OalAlertDialog
 
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -249,11 +247,11 @@ fun CarPlaySettingsSection(viewModel: SettingsViewModel) {
         Text("Android Auto settings below apply only to Android phones.", style = MaterialTheme.typography.bodySmall)
     }
     if (setupHelp) {
-        AlertDialog(onDismissRequest = {
+        OalAlertDialog(onDismissRequest = {
             if (!importing) { setupHelp = false; selectedKey = null; selectedCertificate = null }
         }, title = { Text("Import authentication identity") },
             text = {
-                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Import only while parked and disconnected. Choose a matching P-256 PKCS#8 key (identity.pk8) and one X.509 certificate (certificate.p7b, DER or PKCS#7), each at most 16 KiB. Failed import keeps the existing identity.")
                     SettingsHelp("Files need a system document provider, such as USB storage. Import replaces the pair in private, backup-excluded storage; it does not pair or trust an iPhone.")
                     OutlinedButton(enabled = !importing, onClick = {

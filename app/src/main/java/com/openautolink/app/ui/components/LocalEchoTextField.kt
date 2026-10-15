@@ -60,6 +60,7 @@ fun LocalEchoTextField(
     supportingText: @Composable (() -> Unit)? = null,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     visualTransformation: VisualTransformation = VisualTransformation.None,
+    trailingIcon: @Composable (() -> Unit)? = null,
 ) {
     var local by remember { mutableStateOf(TextFieldValue(value)) }
     var focused by remember { mutableStateOf(false) }
@@ -102,5 +103,6 @@ fun LocalEchoTextField(
         supportingText = supportingText,
         keyboardOptions = keyboardOptions,
         visualTransformation = visualTransformation,
+        trailingIcon = trailingIcon,
     )
 }

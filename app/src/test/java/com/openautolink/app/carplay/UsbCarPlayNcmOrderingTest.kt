@@ -19,7 +19,7 @@ class UsbCarPlayNcmOrderingTest {
             val function=NcmFunctionDiscovery.find(configuration) ?: error("USB NCM function missing")
             val ncm=own {
                 val ncmConnection=usb.openDevice(selected) ?: error("USB NCM unavailable")
-                NcmUsbBridge.open(ncmConnection,function)
+                NcmUsbBridge.open(ncmConnection,function,onDiagnostic={ status(it) })
             }
         """.trimIndent()
         assertTrue("NCM discovery/open/ownership must immediately precede Iap2UsbMuxHost.open (DiPlay openNcm before runStack)",
