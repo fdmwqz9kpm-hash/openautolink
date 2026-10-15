@@ -52,4 +52,11 @@ class UsbCarPlayNcmOrderingTest {
         assertTrue(close.contains("is Iap2UsbMuxHost -> check(owner.awaitClosed(5000))"))
         assertTrue(close.contains("resources.removeAll { it === owner }"))
     }
+
+    @Test fun diagnosticStopIsWiredToTheExactNcmOwnerBeforeReceiverStarts() {
+        val source=runtime()
+        val stop=source.indexOf("projection.setNetworkStartupDiagnosticStop(ncm::stopStartupDiagnostics)")
+        assertTrue(stop>source.indexOf("val projection=ownReceiver"))
+        assertTrue(stop<source.indexOf("projection.start(CarPlayNetworkSelection"))
+    }
 }

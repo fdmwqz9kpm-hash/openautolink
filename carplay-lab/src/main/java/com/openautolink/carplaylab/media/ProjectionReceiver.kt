@@ -67,6 +67,11 @@ class ProjectionReceiver(
     private val retirementRetryRequested = AtomicBoolean()
     private val retirementLock = Any()
     private val lock = Any()
+    private var networkStartupDiagnosticStop: (() -> Unit)? = null
+    /** Install before start. Numeric startup diagnostics only; no session/transport mutation. */
+    fun setNetworkStartupDiagnosticStop(stop: () -> Unit) = synchronized(lock) {
+        networkStartupDiagnosticStop = stop
+    }
     private var server: ServerSocket? = null
     private var acceptThread: Thread? = null
     private var policy: MediaPolicy? = null
@@ -243,12 +248,29 @@ class ProjectionReceiver(
                 val socket = bound.accept()
                 // Capture the actual accept boundary, not the later asynchronous status delivery.
                 val acceptedMonoNanos = System.nanoTime()
-                synchronized(lock) {
+                var diagnosticStop: (() -> Unit)? = null
+                val accepted = synchronized(lock) {
                     if (closed.get() || admissionRevoked.get() || network == null && policy?.allows(socket.inetAddress) != true ||
                         sessions.size >= (if (network == null) 2 else 1) || admittedCount >= 32) {
                         socket.close(); status("media stage=admission-declined")
+                        false
                     } else {
                         admittedCount++
+                        diagnosticStop = networkStartupDiagnosticStop
+                        true
+                    }
+                }
+                if (!accepted) continue
+                // The accepted-owner diagnostic boundary precedes all fallible session setup.
+                // No observer runs under the receiver lock; callback failure cannot undo admission.
+                runCatching { diagnosticStop?.invoke() }
+                synchronized(lock) {
+                    // A reentrant observer may retire this receiver while the lock is released.
+                    if (closed.get() || admissionRevoked.get()) {
+                        socket.close()
+                        return@synchronized
+                    }
+                    run {
                         socket.tcpNoDelay = true; socket.keepAlive = true
                         val config = benchReceiverConfig(btMac, port, microphoneCapability, displayConfiguration)
                             .copy(hevc = videoSelection.hevcOffered)

@@ -5,6 +5,8 @@ import android.os.ParcelFileDescriptor
 import com.shilapi.xcertplay.transport.*
 import java.io.*
 import java.util.concurrent.atomic.AtomicBoolean
+import com.shilapi.xcertplay.transport.UsbNetworkStartupDiagnostics.Direction
+import com.shilapi.xcertplay.transport.UsbNetworkStartupDiagnostics.Decision
 
 class Ipv6NcmBridge(private val ncm: NcmUsbBridge, private val tun: ParcelFileDescriptor,
     private val hostMac: ByteArray, private val onError: () -> Unit) : AutoCloseable {
@@ -20,11 +22,7 @@ class Ipv6NcmBridge(private val ncm: NcmUsbBridge, private val tun: ParcelFileDe
    val output=FileOutputStream(tun.fileDescriptor)
    while(running.get()) {
     val frame=ncm.recv(1000) ?: continue
-    val view=EthernetIpv6Codec.parseIpv6View(frame) ?: continue
-    val packet=frame.copyOfRange(view.payloadOffset,view.payloadOffset+view.payloadLength)
-    if(!linkLocal(packet)) continue
-    peerMac=view.sourceMac
-    output.write(packet)
+    forwardInbound(frame,output)
    }
   }
   worker("oal-usb-ipv6-out") {
@@ -32,12 +30,30 @@ class Ipv6NcmBridge(private val ncm: NcmUsbBridge, private val tun: ParcelFileDe
    while(running.get()) {
     val count=input.read(buffer); if(count<0) throw EOFException()
     if(count==0) { Thread.sleep(1); continue }
-    val packet=buffer.copyOf(count); if(!linkLocal(packet)) continue
-    val ipv6=EthernetIpv6Codec.addNeighborAdvertisementTargetMac(packet,hostMac)
-    val mac=EthernetIpv6Codec.multicastDestinationMac(ipv6) ?: peerMac ?: continue
-    ncm.send(EthernetIpv6Codec.build(hostMac,mac,ipv6),2000)
+    forwardOutbound(buffer.copyOf(count))
    }
   }
+ }
+ internal fun forwardInbound(frame:ByteArray,output:OutputStream) {
+  val view=EthernetIpv6Codec.parseIpv6View(frame) ?: return
+  val packet=frame.copyOfRange(view.payloadOffset,view.payloadOffset+view.payloadLength)
+  if(!linkLocal(packet)) {
+   ncm.startupDiagnostics.packet(Direction.IN,packet,peerMac!=null,Decision.FILTER_DROP); return
+  }
+  peerMac=view.sourceMac
+  ncm.startupDiagnostics.packet(Direction.IN,packet,true,Decision.FORWARD)
+  output.write(packet)
+ }
+ internal fun forwardOutbound(packet:ByteArray) {
+  if(!linkLocal(packet)) {
+   ncm.startupDiagnostics.packet(Direction.OUT,packet,peerMac!=null,Decision.FILTER_DROP); return
+  }
+  val ipv6=EthernetIpv6Codec.addNeighborAdvertisementTargetMac(packet,hostMac)
+  val mac=EthernetIpv6Codec.multicastDestinationMac(ipv6) ?: peerMac ?: run {
+   ncm.startupDiagnostics.packet(Direction.OUT,ipv6,false,Decision.MAC_UNKNOWN_DROP); return
+  }
+  ncm.startupDiagnostics.packet(Direction.OUT,ipv6,peerMac!=null,Decision.FORWARD)
+  ncm.send(EthernetIpv6Codec.build(hostMac,mac,ipv6),2000)
  }
  override fun close() {
   running.set(false); ncm.close(); tun.close()
