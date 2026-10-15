@@ -18,7 +18,7 @@ Android Auto and CarPlay share one app, with independent connection settings. **
 [Releases](https://github.com/mossyhub/openautolink/releases/latest) · [Installation](#installation) · [Android Auto setup](#android-auto-setup) · [CarPlay setup](#carplay-setup) · [Compatibility](docs/compatibility.md) · [Troubleshooting](docs/troubleshooting.md) · [XDA discussion](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/)
 
 [![CI](https://github.com/mossyhub/openautolink/actions/workflows/ci.yml/badge.svg)](https://github.com/mossyhub/openautolink/actions/workflows/ci.yml)
-[![Release](https://github.com/mossyhub/openautolink/actions/workflows/release-apk.yml/badge.svg)](https://github.com/mossyhub/openautolink/releases/latest)
+[![Release](https://github.com/mossyhub/openautolink/actions/workflows/release-apk.yml/badge.svg?event=release)](https://github.com/mossyhub/openautolink/releases/latest)
 
 > [!IMPORTANT]
 > To use OpenAutoLink, build the app and publish it through your own Google Play Console developer account. Locked GM vehicles require Google Play delivery; APK sideloading is not supported.
