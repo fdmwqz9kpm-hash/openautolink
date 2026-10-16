@@ -34,6 +34,42 @@ class OalCarPlayMetadataHostTest {
         } finally { host.close(); ClusterNavigationState.clear(); unmockkAll() }
     }
 
+    @Test fun productionIntakeRecoversClusterAfterStaleGapWithoutReplacingRouteOrHostSuppression() {
+        var now = 0L
+        val intake = com.openautolink.carplaylab.metadata.CarPlayMetadataIntake { now }.apply { authenticate() }
+        val host = OalCarPlayMetadataHost(mockk<Context>())
+        val owner = requireNotNull(host.javaClass.getDeclaredField("owner").apply { isAccessible = true }.get(host))
+        assertTrue(MetadataHostOwnership.process.claim(owner))
+        fun publish() = host.publishRoute(intake.media, intake.routeMetadata, intake.artwork)
+        fun select() = intake.handle(com.shilapi.xcertplay.iap2.message.Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)) })
+        try {
+            intake.handle(com.shilapi.xcertplay.iap2.message.Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2); string(4,"Turn road") })
+            intake.handle(com.shilapi.xcertplay.iap2.message.Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)); u32(10,350) })
+            publish()
+            assertEquals(350, ClusterNavigationState.state.value?.distanceMeters)
+            val demand = ClusterNavigationState.recoveryDemand.value
+            assertNotNull(demand)
+            now = 30_110; intake.tick(); publish()
+            assertNull(ClusterNavigationState.state.value)
+            assertTrue(ClusterNavigationState.isActive)
+            assertEquals(demand, ClusterNavigationState.recoveryDemand.value)
+            now = 56_000; select(); publish()
+            assertNotNull("real intake and host must restore the cluster turn from ID alone", ClusterNavigationState.state.value)
+            assertEquals(demand, ClusterNavigationState.recoveryDemand.value)
+            assertNull(intake.navigation?.distanceMeters)
+            ClusterNavigationState.suppressCurrentRoute()
+            now = 86_000; intake.tick(); publish()
+            now = 112_000; select(); publish()
+            assertNotNull(intake.navigation)
+            assertTrue("same source epoch cannot override host stop", ClusterNavigationState.isRouteSuppressed)
+            intake.handle(com.shilapi.xcertplay.iap2.message.Iap2Messages.buildRaw(0x5201) { u8(1,0) })
+            select(); publish()
+            assertNull(ClusterNavigationState.state.value)
+            assertFalse(ClusterNavigationState.isRouteSuppressed)
+            assertNotEquals(demand, ClusterNavigationState.recoveryDemand.value)
+        } finally { host.close(); ClusterNavigationState.clear(); unmockkAll() }
+    }
+
     @Test fun loadingRouteHonorsHostSuppressionAndNewSourceEpochReplacesIt() {
         val host = OalCarPlayMetadataHost(mockk<Context>())
         val owner = requireNotNull(host.javaClass.getDeclaredField("owner").apply { isAccessible = true }.get(host))

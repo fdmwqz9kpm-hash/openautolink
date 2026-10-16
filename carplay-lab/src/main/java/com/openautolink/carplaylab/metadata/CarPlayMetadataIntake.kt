@@ -69,11 +69,14 @@ class CarPlayMetadataIntake(private val elapsedMs: () -> Long) {
         if (retired || age >= ROUTE_EXPIRES_MS) {
             clearRoute()
             observe("lifecycle", "cleared", before, reason = if (retired) "revoke" else "expired")
-        } else if (age >= INSTRUCTION_STALE_MS && !instructionExpired) {
-            // Keep the source epoch, but discard the stale instruction and its estimates.
-            navigation = null; maneuvers.clear(); instructionExpired = true
+        } else if (age >= INSTRUCTION_STALE_MS) {
+            // Definitions belong to the route's 120s lifetime, not the selected
+            // instruction's 30s freshness window. Pending estimates can also age
+            // out while selection remains expired, so clear them on every crossing.
+            val firstExpiry = !instructionExpired
+            navigation = null; instructionExpired = true
             distance = null; road = null; seconds = null; meters = null
-            observe("lifecycle", "cleared", before, reason = "stale")
+            if (firstExpiry) observe("lifecycle", "cleared", before, reason = "stale")
         }
     }
     private fun clearRoute() {
@@ -82,7 +85,7 @@ class CarPlayMetadataIntake(private val elapsedMs: () -> Long) {
     }
     private fun publishRoute() {
         val m = maneuvers[index]
-        navigation = if (route && m != null && lastRoute?.let { elapsedMs() - it < INSTRUCTION_STALE_MS } == true) CarPlayNavigationMetadata(m.type,m.side,distance,m.road ?: road,seconds,meters,m.junction,m.exitAngle,m.angles) else null
+        navigation = if (route && !instructionExpired && m != null && lastRoute?.let { elapsedMs() - it < INSTRUCTION_STALE_MS } == true) CarPlayNavigationMetadata(m.type,m.side,distance,m.road ?: road,seconds,meters,m.junction,m.exitAngle,m.angles) else null
     }
     private fun navigationFrame(frame: Iap2Frame) {
         val b = Iap2BodyReader.of(frame)
@@ -126,7 +129,10 @@ class CarPlayMetadataIntake(private val elapsedMs: () -> Long) {
             }
             road = if (b.has(3)) name else road
             distance = nextDistance ?: distance; seconds = nextSeconds ?: seconds; meters = nextMeters ?: meters
-            lastRoute = elapsedMs(); instructionExpired = false
+            lastRoute = elapsedMs()
+            // After staleness, neither details nor an absent-current delta confirms
+            // that the old selection is still current. Require an explicit selection.
+            if (current != null) instructionExpired = false
         }
         publishRoute()
     }
