@@ -97,9 +97,14 @@ class OalUsbCarPlayRuntime(
         check(!canceled.get()) { "USB CarPlay attempt revoked" }
         resource
     }
+    private fun requestHostUi(isCurrent: () -> Boolean) {
+        CarPlayHostUi.request { !canceled.get() && isCurrent() }
+    }
+
     private fun ownReceiver(create: () -> ProjectionReceiver): ProjectionReceiver = synchronized(resourcesLock) {
         val projection = own(create)
         active()
+        projection.setHostUiHandler(::requestHostUi)
         receiver = projection
         presentation = initialPresentation // Constructor starts with the qualified bootstrap target.
         reconcilePresentation()

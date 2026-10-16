@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.528
+
+### USB permission retry after explicit selection
+- Allow a fresh explicit selection of the currently attached iPhone to request USB access again after a denied permission result. Keep automatic retries suppressed and retain real platform permission enforcement.
+- Bind picker entries to manager-qualified attachment receipts so stale entries cannot authorize a replacement after detach, manager restart or same-address reattachment. Preserve one-shot owner, cancellation and replacement-consent fences.
+
+### CarPlay return to the car
+- Supply the OpenAutoLink logo and label for CarPlay's return-to-car tile.
+- Route authenticated, current-session generic return requests to background OAL without stopping CarPlay transport or audio. Reopening OAL retains the existing presentation reattachment path rather than deliberately reconnecting.
+- Reject stale-session and retired-Activity requests, coalesce repeated requests, and keep unsupported URL and video-player actions separate from generic return.
+- Physical iPhone tile rendering, OEM landing behavior, retained audio and same-session return still require vehicle verification. This does not fix the separately investigated Bluetooth audio interruption or explain the original permission-denied callback.
+- No companion behavior changes; matching GitHub companion APK is version-aligned only.
+
 ## 0.1.527
 
 ### CarPlay cluster guidance recovery

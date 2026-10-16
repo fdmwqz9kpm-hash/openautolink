@@ -814,7 +814,9 @@ class AirPlaySession @JvmOverloads constructor(
         }
         if (type == "requestUI" && string(params["url"]) == VideoInCar.UI_URL) {
             listener.onVideoPlaybackUiRequested(this)
-        } else if (type == "requestUI") {
+        } else if (type == "requestUI" && controlAuthenticated &&
+            (params["url"] == null || params["url"] == "")) {
+            // Generic return only. Never launch arbitrary phone-provided URL intents.
             listener.onHostUiRequested(this)
         }
         listener.onCommand(this, type, params)
