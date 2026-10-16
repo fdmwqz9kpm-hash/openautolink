@@ -47,8 +47,10 @@ data class UsbDeviceCandidate(
     val friendlyName: String,      // manufacturer + product, falling back to VID:PID
     val isAccessoryMode: Boolean,  // true if already in Google Accessory mode
     val isLikelyPhone: Boolean = false, // heuristic: exposes ADB/MTP/PTP/vendor interfaces
-    /** Memory-only enumeration receipt; a stale picker row must not select its replacement. */
+    /** Census identity only: Android may reuse a path-derived deviceId after reattachment. */
     val deviceId: Int? = null,
+    /** Opaque, memory-only authority scoped to the publishing manager's attachment. */
+    val attachmentReceipt: Any? = null,
 )
 
 /**
@@ -137,6 +139,9 @@ class UsbConnectionManager(
     private var admissionGeneration: Long? = null
     // Fences observations spanning admission/release or stop/start, including null-owner ABA.
     private var observationGeneration = 0L
+    private data class PickerAttachment(val device: UsbDevice, val receipt: Any = Any())
+    // Access only under this manager's monitor. Never persisted or exported.
+    private val pickerAttachments = mutableMapOf<String, PickerAttachment>()
 
     @Synchronized fun pendingDevice(generation: Long): UsbDevice? {
         val candidate = consent.current(generation) ?: return null
@@ -409,6 +414,7 @@ class UsbConnectionManager(
     @Synchronized fun stop() {
         if (!isRunning) return
         isRunning = false
+        pickerAttachments.clear()
         observationGeneration++
         pendingCandidateGeneration?.let { consent.stay(it); onCandidateDetached(it) }
         pendingCandidateGeneration = null
@@ -615,6 +621,7 @@ class UsbConnectionManager(
         // that has opened endpoints but not yet published ownership must see this
         // tombstone and refuse to deliver the now-detached pipe.
         detachedDeviceNames.add(device.deviceName)
+        pickerAttachments.remove(device.deviceName)
         val pending = pendingCandidateGeneration
         if (consent.detach(device.deviceName)) {
             pendingCandidateGeneration = null
@@ -701,9 +708,14 @@ class UsbConnectionManager(
         // phone is far worse than showing one extra entry. Instead we hide only
         // devices that are POSITIVELY not phones (hubs, storage, HID, audio...)
         // and sort the likely phones to the top.
-        val list = usbManager.deviceList.values
+        val devices = usbManager.deviceList
+        pickerAttachments.keys.retainAll(devices.keys)
+        val list = devices.values
+            .filterNot { it.deviceName in detachedDeviceNames }
             .filterNot { isHubOrSystemDevice(it) }
             .map { d ->
+                val attachment = pickerAttachments[d.deviceName]?.takeIf { sameEnumeration(it.device, d) }
+                    ?: PickerAttachment(d).also { pickerAttachments[d.deviceName] = it }
                 UsbDeviceCandidate(
                     deviceName = d.deviceName,
                     vendorId = d.vendorId,
@@ -712,6 +724,7 @@ class UsbConnectionManager(
                     isAccessoryMode = UsbConstants.isAccessoryDevice(d.vendorId, d.productId),
                     isLikelyPhone = looksLikePhone(d),
                     deviceId = d.deviceId,
+                    attachmentReceipt = attachment.receipt,
                 )
             }
             .sortedWith(compareByDescending<UsbDeviceCandidate> { it.isAccessoryMode }
@@ -756,7 +769,10 @@ class UsbConnectionManager(
     @Synchronized private fun onUserSelectedDevice(candidate: UsbDeviceCandidate) {
         if (!isRunning) return
         val device = usbManager.deviceList[candidate.deviceName]
-        if (device == null || candidate.deviceId == null || device.deviceId != candidate.deviceId ||
+        val attachment = pickerAttachments[candidate.deviceName]
+        if (attachment == null || candidate.attachmentReceipt !== attachment.receipt ||
+            device == null || !sameEnumeration(attachment.device, device) ||
+            candidate.deviceId == null || device.deviceId != candidate.deviceId ||
             device.vendorId != candidate.vendorId || device.productId != candidate.productId ||
             device.deviceName in detachedDeviceNames) {
             publishCandidates()

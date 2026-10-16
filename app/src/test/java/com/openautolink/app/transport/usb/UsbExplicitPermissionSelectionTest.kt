@@ -56,6 +56,72 @@ class UsbExplicitPermissionSelectionTest {
         assertEquals("A stale rendered row must not mint new consent for a replacement enumeration", 1, offers.size)
     }
 
+    @Test fun staleRenderedRowCannotAuthorizeDeliveredDetachSamePathSameIdReattach() {
+        start()
+        val stale = UsbConnectionManager.availableDevices.value.single()
+        census.remove(apple.deviceName)
+        detach()
+        val replacement = phone(apple.deviceId)
+        census[replacement.deviceName] = replacement
+        manager.javaClass.getDeclaredMethod("handleDeviceAttached", UsbDevice::class.java)
+            .apply { isAccessible = true }.invoke(manager, replacement)
+        val fresh = UsbConnectionManager.availableDevices.value.single()
+        // Suppress the replacement's ordinary automatic offer, not its picker access.
+        manager.stay(offers.last())
+        val beforeStaleTap = offers.size
+        UsbConnectionManager.selectDevice(stale)
+        assertEquals("A delivered detach must revoke the old row even when path AND deviceId are reused",
+            beforeStaleTap, offers.size)
+        UsbConnectionManager.selectDevice(fresh)
+        assertEquals(beforeStaleTap + 1, offers.size)
+        assertTrue(manager.accept(offers.last()))
+        val receipt = manager.iphonePermissionCallbacks(replacement)
+        assertTrue(receipt.first())
+        assertTrue(receipt.second())
+        assertFalse(receipt.second())
+        verify(exactly = 0) { usb.requestPermission(any<UsbDevice>(), any<android.app.PendingIntent>()) }
+        verify(exactly = 0) { usb.openDevice(any()) }
+    }
+
+    @Test fun stoppedManagerCannotRepublishAnOldRowsAuthorityOnRestart() {
+        start()
+        val stale = UsbConnectionManager.availableDevices.value.single()
+        manager.stop()
+        manager.start()
+        val fresh = UsbConnectionManager.availableDevices.value.single()
+        manager.stay(offers.last())
+        val before = offers.size
+        UsbConnectionManager.selectDevice(stale)
+        assertEquals("Restart must revoke every previously published row", before, offers.size)
+        UsbConnectionManager.selectDevice(fresh)
+        assertEquals(before + 1, offers.size)
+        assertTrue(manager.accept(offers.last()))
+        assertTrue(manager.iphonePermissionCallbacks(apple).second())
+    }
+
+    @Test fun replacementManagerCannotAcceptAnotherManagersRenderedRow() {
+        start()
+        val stale = UsbConnectionManager.availableDevices.value.single()
+        manager.stop()
+        val nextOffers = mutableListOf<Long>()
+        val next = UsbConnectionManager(context, scope, {},
+            onCandidate = { generation, _ -> nextOffers.add(generation) }, onIphoneSelected = { true })
+        try {
+            next.start()
+            val fresh = UsbConnectionManager.availableDevices.value.single()
+            next.stay(nextOffers.last())
+            val before = nextOffers.size
+            UsbConnectionManager.selectDevice(stale)
+            assertEquals("Rows are qualified by their publishing manager", before, nextOffers.size)
+            UsbConnectionManager.selectDevice(fresh)
+            assertEquals(before + 1, nextOffers.size)
+            assertTrue(next.accept(nextOffers.last()))
+            assertTrue(next.iphonePermissionCallbacks(apple).second())
+        } finally {
+            next.stop()
+        }
+    }
+
     private fun select() = UsbConnectionManager.selectDevice(UsbConnectionManager.availableDevices.value.single())
     private fun admitPicker(): Pair<() -> Boolean, () -> Boolean> {
         select()
