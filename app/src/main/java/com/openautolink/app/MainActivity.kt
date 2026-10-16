@@ -13,9 +13,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -33,8 +30,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 class MainActivity : ComponentActivity() {
-
-    private var launcherRecoveryVisible by mutableStateOf(false)
 
     private val requiredPermissions = buildList {
         add(Manifest.permission.RECORD_AUDIO)
@@ -68,14 +63,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putBoolean(LauncherRecovery.SAVED_VISIBLE, launcherRecoveryVisible)
         usbVpnConsentGeneration?.let { outState.putLong("usbVpnConsentGeneration", it) }
         super.onSaveInstanceState(outState)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        launcherRecoveryVisible = LauncherRecovery.onCreate(intent, savedInstanceState)
         enableEdgeToEdge()
         usbVpnConsentGeneration = savedInstanceState?.getLong("usbVpnConsentGeneration")?.takeIf { it > 0 }
         lifecycleScope.launch {
@@ -126,10 +119,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             OpenAutoLinkTheme {
-                AppNavHost(
-                    launcherRecoveryVisible = launcherRecoveryVisible,
-                    onLauncherRecoveryDismiss = { launcherRecoveryVisible = false },
-                )
+                AppNavHost()
             }
         }
 
@@ -321,7 +311,6 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        launcherRecoveryVisible = LauncherRecovery.onNewIntent(launcherRecoveryVisible, intent)
         Log.i("MainActivity", "onNewIntent: action=${intent.action} extras=${intent.extras?.keySet()}")
         com.openautolink.app.diagnostics.DiagnosticLog.i(
             "input",

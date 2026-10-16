@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.527
+
+### CarPlay cluster guidance recovery
+- Preserve the route's bounded maneuver-definition cache when a quiet interval makes the displayed instruction stale. A fresh explicit turn selection can restore cluster guidance without requiring the iPhone to resend the same maneuver details.
+- Keep stale instructions hidden until that confirmation, expire old distance/time estimates, and retain existing route-expiry, stop, arrival, cancellation and host-stop behavior. Do not hold an obsolete turn on screen indefinitely.
+- Add parser-to-host regression coverage for the captured quiet-interval failure and deadline, selection, cache-bound and route-replacement cases. Vehicle recovery still requires confirmation on this build.
+
+### Uninterrupted launcher entry
+- Remove the automatic Projection controls dialog when opening or returning to OAL from the launcher. Continue directly to the normal app screen.
+- Keep Settings and Restore button positions available through the movable OAL-logo menu. Projection connections, saved transport choices and VPN/upload routing are unchanged.
+- No companion behavior changes; the matching companion APK is version-aligned only and is not required for these car-side fixes.
+
 ## 0.1.526
 
 ### Wired CarPlay mode selection
