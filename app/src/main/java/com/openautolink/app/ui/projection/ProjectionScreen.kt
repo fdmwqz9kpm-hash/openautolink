@@ -1675,7 +1675,7 @@ private fun UsbDevicePickerOverlay(onOpenSettings: () -> Unit) {
                                         .clip(RoundedCornerShape(8.dp))
                                         .clickable {
                                             com.openautolink.app.transport.usb.UsbConnectionManager
-                                                .selectDevice(device.deviceName)
+                                                .selectDevice(device)
                                         }
                                         .padding(vertical = 12.dp, horizontal = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically,

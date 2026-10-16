@@ -67,6 +67,15 @@ class ProjectionReceiver(
     private val retirementRetryRequested = AtomicBoolean()
     private val retirementLock = Any()
     private val lock = Any()
+    @Volatile private var hostUiHandler: (((() -> Boolean)) -> Unit)? = null
+    /** Install before start. The host must recheck the exact receipt on its UI worker. */
+    fun setHostUiHandler(handler: (isCurrent: () -> Boolean) -> Unit) = synchronized(lock) {
+        check(!closed.get() && !admissionRevoked.get() && server == null)
+        hostUiHandler = handler
+    }
+    private fun canRequestHostUi(session: AirPlaySession): Boolean =
+        !closed.get() && !admissionRevoked.get() && active === session &&
+            session in sessions && session.controlAuthenticated && !session.isClosed
     private var networkStartupDiagnosticStop: (() -> Unit)? = null
     /** Install before start. Numeric startup diagnostics only; no session/transport mutation. */
     fun setNetworkStartupDiagnosticStop(stop: () -> Unit) = synchronized(lock) {
@@ -121,6 +130,13 @@ class ProjectionReceiver(
     /** Presentation receipts do not take the session/control lifecycle lock or retire transport. */
     fun attachSurface(surface: Surface) { if (!closed.get() && !admissionRevoked.get()) sink.attachSurface(surface) }
     fun detachSurface(surface: Surface) { sink.detachSurface(surface) }
+    private val oemIcons = listOf(AirPlayIcon(192, 192,
+        checkNotNull(ProjectionReceiver::class.java.getResourceAsStream("/oal_carplay_home.png")) {
+            "Packaged OAL return icon missing"
+        }.use { it.readBytes() }))
+    private fun sessionConfig(): AirPlayConfig =
+        benchReceiverConfig(btMac, port, microphoneCapability, displayConfiguration).copy(
+            hevc = videoSelection.hevcOffered, oemLabel = "OpenAutoLink", icons = oemIcons)
     private val engine = CarPlayMediaEngine(sink, microphoneEnabled = microphoneCapability.available,
         onDiagnostic = { session, message ->
             if (!closed.get() && !admissionRevoked.get() && session in sessions) status(message)
@@ -151,6 +167,11 @@ class ProjectionReceiver(
         }
         override fun onVideoFrameRendered(session: AirPlaySession) {
             if (!closed.get() && session in sessions) { active = session; status("media stage=video-first-frame-confirmed count=1") }
+        }
+        override fun onHostUiRequested(session: AirPlaySession) {
+            if (!canRequestHostUi(session)) return
+            // UI work is owned by the host; no Activity or task effects on this socket worker.
+            runCatching { hostUiHandler?.invoke { canRequestHostUi(session) } }
         }
         override fun onCommand(session: AirPlaySession, type: String, params: Map<String, Any?>) {
             if (closed.get() || active !== session || session !in sessions) return
@@ -272,8 +293,7 @@ class ProjectionReceiver(
                     }
                     run {
                         socket.tcpNoDelay = true; socket.keepAlive = true
-                        val config = benchReceiverConfig(btMac, port, microphoneCapability, displayConfiguration)
-                            .copy(hevc = videoSelection.hevcOffered)
+                        val config = sessionConfig()
                         telemetry.advertised(displayConfiguration.width, displayConfiguration.height)
                         status("BENCH_DIAG microphoneCapability=${microphoneCapability.available}")
                         val admission = peerAdmission

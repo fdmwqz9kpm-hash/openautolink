@@ -215,6 +215,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        com.openautolink.app.carplay.CarPlayHostUi.register(this)
         com.openautolink.app.diagnostics.DiagnosticLog.i("lifecycle", "MainActivity.onStart")
         com.openautolink.app.wake.PreWakeMonitor.reportActivity(
             com.openautolink.app.wake.PreWakeActivityCallback.START
@@ -222,6 +223,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        com.openautolink.app.carplay.CarPlayHostUi.unregister(this)
         super.onStop()
         // Backgrounding loses presentation, not the CarPlay session. Surface callbacks
         // detach video; explicit Stop/Exit and ignition-off still retire exact owners.
