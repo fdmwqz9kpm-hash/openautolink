@@ -15,6 +15,30 @@ class UsbCarPlayFailurePolicyTest {
         assertNull(fence.blocked(phone, setOf(other)))
         assertNull(fence.blocked(phone, setOf(phone)))
     }
+    @Test fun explicitAdmissionBypassesOnlyAnActualPermissionAwaitDenialWithoutClearingItsFence() {
+        val fence = UsbCarPlayRetryFence()
+        val phone = UsbCarPlayTopology("bus/2", 2, 0x05ac, 0x12a8)
+        fence.failed(phone, "PERMISSION", permissionAwaitDenied = true)
+        repeat(3) { assertEquals("PERMISSION", fence.blocked(phone, setOf(phone))) }
+        assertNull(fence.blocked(phone, setOf(phone), explicitPermissionRetry = true))
+        assertEquals("An explicit attempt must not globally clear automatic denial suppression",
+            "PERMISSION", fence.blocked(phone, setOf(phone)))
+        fence.failed(phone, "PERMISSION") // SecurityException outside the real permission waiter.
+        assertEquals("PERMISSION", fence.blocked(phone, setOf(phone), explicitPermissionRetry = true))
+    }
+
+    @Test fun everyOtherFailureRemainsFencedForAutomaticAndExplicitSelection() {
+        val fence = UsbCarPlayRetryFence()
+        val phone = UsbCarPlayTopology("bus/2", 2, 0x05ac, 0x12a8)
+        for (reason in listOf("PASSWORD_PROTECTED", "USER_DENIED", "TRUST_PENDING_TIMEOUT", "INVALID_RECORD",
+            "TRANSPORT_LOSS", "TIMEOUT", "SETUP", "REMOTE_ERROR", "INVALID_RESPONSE")) {
+            // Even an inconsistent caller flag cannot turn another failure into USB permission consent.
+            fence.failed(phone, reason, permissionAwaitDenied = true)
+            assertEquals(reason, fence.blocked(phone, setOf(phone)))
+            assertEquals(reason, fence.blocked(phone, setOf(phone), explicitPermissionRetry = true))
+        }
+    }
+
     @Test fun pendingAndDenialAreNotPasswordOrTransportFailures() {
         assertEquals("PASSWORD_PROTECTED", UsbCarPlayFailurePolicy.reason(LockdownPairingException.PasswordProtected))
         assertEquals("USER_DENIED", UsbCarPlayFailurePolicy.reason(LockdownPairingException.UserDeniedPairing))

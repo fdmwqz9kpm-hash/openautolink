@@ -34,7 +34,8 @@ class UsbAuthorizationRecoveryWiringTest {
     @Test fun onlyExactRowTapSelectsUsbAndExistingSwitchStayRemainViewModelOwned() {
         val picker = screen.substringAfter("private fun UsbDevicePickerOverlay")
         val click = picker.substringAfter(".clickable {").substringBefore(".padding(")
-        assertTrue(click.contains(".selectDevice(device.deviceName)"))
+        assertTrue("Picker must pass its exact enumeration receipt, not only a reusable bus path",
+            click.contains(".selectDevice(device)"))
         assertEquals(1, Regex("\\.selectDevice\\(").findAll(screen).count())
         val beforePicker = screen.substringBefore("private fun UsbDevicePickerOverlay")
         assertFalse(beforePicker.contains("UsbAttachAuthorization.explicitRetry"))

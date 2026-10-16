@@ -34,6 +34,8 @@ class OalUsbCarPlayRuntime(
     private val onDisplayQualified: (CarPlayDisplayPreferences) -> Unit = {},
     private val onReenumerationStarted: () -> Boolean = { false },
     private val onReplacementAccepted: (UsbDevice) -> Boolean = { false },
+    private val initialPermissionOwner: () -> Boolean = { true },
+    private val consumeExplicitPermissionRetry: () -> Boolean = { false },
 ) : CarPlayRuntime {
     private val canceled=AtomicBoolean()
     private val resourcesLock=Any()
@@ -118,6 +120,7 @@ class OalUsbCarPlayRuntime(
         presentation = target
     }
     private var trustPending = false
+    private var permissionAwaitDenied = false
     private var topology = topology(device)
     private fun topology(value: UsbDevice) = UsbCarPlayTopology(value.deviceName, value.deviceId, value.vendorId, value.productId)
     private fun failureUi(reason: String) = CarPlayConnectionFailure(when(reason) {
@@ -141,7 +144,7 @@ class OalUsbCarPlayRuntime(
             val receipt = "CarPlay USB stage=failed reason=$reason"
             if(canceled.get()) audioDiagnostics.record(receipt) else status(receipt)
             if(reason == "CANCELLED") throw failure
-            retryFence.failed(topology, reason)
+            retryFence.failed(topology, reason, permissionAwaitDenied)
             throw failureUi(reason)
         }
     }
@@ -160,13 +163,20 @@ class OalUsbCarPlayRuntime(
         active()
         require(isCandidate(device)) { "Selected USB device lacks Apple USBMUX" }
         val usb=context.getSystemService(UsbManager::class.java) ?: error("USB host unavailable")
-        retryFence.blocked(topology, usb.deviceList.values.map(::topology).toSet())?.let { reason ->
+        // Consume on first admission even without a failure: the user's original selection
+        // cannot survive its own denial and authorize an automatic runtime rebuild.
+        val explicitPermissionRetry = consumeExplicitPermissionRetry()
+        if (!initialPermissionOwner()) throw CancellationException("USB selection retired before permission")
+        retryFence.blocked(topology, usb.deviceList.values.map(::topology).toSet(), explicitPermissionRetry)?.let { reason ->
             status("CarPlay USB stage=retry result=blocked")
             throw failureUi(reason)
         }
         status("CarPlay USB stage=usb-permission result=pending")
-        requirePermission(UsbCarPlayPermission.await(context, usb, device) { canceled.get() })
+        requirePermission(UsbCarPlayPermission.await(context, usb, device) {
+            canceled.get() || !initialPermissionOwner()
+        })
         active()
+        if (!initialPermissionOwner()) throw CancellationException("USB selection retired during permission")
         val serial=device.serialNumber?.takeIf { it.isNotBlank() } ?: error("Private USB serial required for exact ownership")
         VpnService.prepare(context)?.let {
             status("CarPlay USB stage=vpn-consent result=pending")
@@ -401,6 +411,7 @@ class OalUsbCarPlayRuntime(
         }
     }
     private fun requirePermission(result: UsbCarPlayPermission.Result) {
+        permissionAwaitDenied = result == UsbCarPlayPermission.Result.DENIED
         status("CarPlay USB stage=usb-permission result=${result.name.lowercase()}")
         when(result) {
             UsbCarPlayPermission.Result.GRANTED -> Unit

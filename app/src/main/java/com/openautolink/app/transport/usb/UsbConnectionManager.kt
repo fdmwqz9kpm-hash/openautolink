@@ -47,6 +47,8 @@ data class UsbDeviceCandidate(
     val friendlyName: String,      // manufacturer + product, falling back to VID:PID
     val isAccessoryMode: Boolean,  // true if already in Google Accessory mode
     val isLikelyPhone: Boolean = false, // heuristic: exposes ADB/MTP/PTP/vendor interfaces
+    /** Memory-only enumeration receipt; a stale picker row must not select its replacement. */
+    val deviceId: Int? = null,
 )
 
 /**
@@ -110,6 +112,9 @@ class UsbConnectionManager(
         fun selectDevice(deviceName: String) {
             activeInstance?.onUserSelectedDevice(deviceName)
         }
+        fun selectDevice(candidate: UsbDeviceCandidate) {
+            activeInstance?.onUserSelectedDevice(candidate)
+        }
     }
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -126,34 +131,43 @@ class UsbConnectionManager(
     private val dispatchOwnership = UsbDispatchOwnership()
 
     private var pendingCandidateGeneration: Long? = null
+    private data class PendingSelection(val generation: Long, val device: UsbDevice, val explicit: Boolean)
+    private var pendingSelection: PendingSelection? = null
+    private var explicitIphoneSelection: UsbDispatchOwnership.Token? = null
     private var admissionGeneration: Long? = null
     // Fences observations spanning admission/release or stop/start, including null-owner ABA.
     private var observationGeneration = 0L
 
     @Synchronized fun pendingDevice(generation: Long): UsbDevice? {
         val candidate = consent.current(generation) ?: return null
+        val selection = pendingSelection?.takeIf { it.generation == generation } ?: return null
         return usbManager.deviceList[candidate.deviceName]?.takeIf {
-            isRunning && it.vendorId == candidate.vendorId && it.deviceName !in detachedDeviceNames
+            isRunning && it.vendorId == candidate.vendorId && it.deviceName !in detachedDeviceNames &&
+                sameEnumeration(it, selection.device)
         }
     }
     @Synchronized fun stay(generation: Long) {
         if (consent.stay(generation)) {
             pendingCandidateGeneration = null
+            pendingSelection = null
         }
     }
     /** Called only AFTER awaited projection retirement; presence is checked a second time. */
-    @Synchronized fun accept(generation: Long): Boolean {
+    @Synchronized fun accept(generation: Long, explicitUserSelection: Boolean = false): Boolean {
         val device = pendingDevice(generation) ?: return false
         if (dispatchOwnership.current() != null || retirementPending.get()) return false
         consent.accept(generation) ?: return false
+        val explicit = explicitUserSelection || pendingSelection?.explicit == true
+        pendingSelection = null
         observationGeneration++
         pendingCandidateGeneration = null
         admissionGeneration = generation
-        requestPermissionOrConnect(device, consentGranted = true)
+        requestPermissionOrConnect(device, consentGranted = true, explicitUserSelection = explicit)
         return dispatchOwnership.current() != null
     }
     @Synchronized private fun releaseSelection(token: UsbDispatchOwnership.Token): Boolean {
         if (!dispatchOwnership.release(token)) return false
+        if (explicitIphoneSelection === token) explicitIphoneSelection = null
         observationGeneration++
         clearPendingPermission(token.deviceName)
         val generation = admissionGeneration
@@ -180,6 +194,7 @@ class UsbConnectionManager(
         if (!isRunning || dispatchOwnership.current() != null || retirementPending.get()) return
         pendingCandidateGeneration?.let { onCandidateDetached(it) }
         pendingCandidateGeneration = null
+        pendingSelection = null
         usbManager.deviceList.values.forEach {
             rejectedDeviceNames.remove(it.deviceName)
             consent.retry(it.deviceName)
@@ -187,6 +202,31 @@ class UsbConnectionManager(
         scanExistingDevices()
     }
     @Volatile private var selectedIphone: UsbDevice? = null
+    private fun sameEnumeration(one: UsbDevice, other: UsbDevice): Boolean =
+        one.deviceName == other.deviceName && one.deviceId == other.deviceId &&
+            one.vendorId == other.vendorId && one.productId == other.productId
+
+    /** Capture during dispatch, before async retirement/Surface waits. The first closure is a
+     * live initial-permission owner guard; the second consumes explicit provenance exactly once.
+     * Neither clears a failure fence nor grants platform USB permission. */
+    @Synchronized fun iphonePermissionCallbacks(device: UsbDevice): Pair<() -> Boolean, () -> Boolean> {
+        val token = dispatchOwnership.current()?.takeIf {
+            it.route == UsbDispatchOwnership.Route.APPLE && it.deviceName == device.deviceName &&
+                selectedIphone?.let { selected -> sameEnumeration(selected, device) } == true
+        } ?: return Pair({ false }, { false })
+        fun current(): Boolean = isRunning && dispatchOwnership.isCurrent(token) &&
+            !token.retiring && !token.reenumerating && !retirementPending.get() &&
+            device.deviceName !in detachedDeviceNames &&
+            selectedIphone?.let { sameEnumeration(it, device) } == true &&
+            usbManager.deviceList[device.deviceName]?.let { sameEnumeration(it, device) } == true
+        return Pair({ synchronized(this) { current() } }, {
+            synchronized(this) {
+                val explicit = explicitIphoneSelection === token
+                if (explicit) explicitIphoneSelection = null
+                explicit && current()
+            }
+        })
+    }
     private val rejectedDeviceNames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var iphoneReenumerationJob: Job? = null
     private var iphoneTransitionToken: UsbDispatchOwnership.Token? = null
@@ -372,6 +412,7 @@ class UsbConnectionManager(
         observationGeneration++
         pendingCandidateGeneration?.let { consent.stay(it); onCandidateDetached(it) }
         pendingCandidateGeneration = null
+        pendingSelection = null
         if (activeInstance === this) activeInstance = null
         scanJob?.cancel()
         scanJob = null
@@ -577,6 +618,7 @@ class UsbConnectionManager(
         val pending = pendingCandidateGeneration
         if (consent.detach(device.deviceName)) {
             pendingCandidateGeneration = null
+            pendingSelection = null
             if (pending != null) onCandidateDetached(pending)
         }
         rejectedDeviceNames.remove(device.deviceName)
@@ -669,6 +711,7 @@ class UsbConnectionManager(
                     friendlyName = friendlyNameFor(d),
                     isAccessoryMode = UsbConstants.isAccessoryDevice(d.vendorId, d.productId),
                     isLikelyPhone = looksLikePhone(d),
+                    deviceId = d.deviceId,
                 )
             }
             .sortedWith(compareByDescending<UsbDeviceCandidate> { it.isAccessoryMode }
@@ -707,6 +750,23 @@ class UsbConnectionManager(
             publishCandidates()
             return
         }
+        selectAttachedDevice(device)
+    }
+
+    @Synchronized private fun onUserSelectedDevice(candidate: UsbDeviceCandidate) {
+        if (!isRunning) return
+        val device = usbManager.deviceList[candidate.deviceName]
+        if (device == null || candidate.deviceId == null || device.deviceId != candidate.deviceId ||
+            device.vendorId != candidate.vendorId || device.productId != candidate.productId ||
+            device.deviceName in detachedDeviceNames) {
+            publishCandidates()
+            return
+        }
+        selectAttachedDevice(device)
+    }
+
+    private fun selectAttachedDevice(device: UsbDevice) {
+        val deviceName = device.deviceName
         val owner = dispatchOwnership.current()
         if (owner != null && (owner.deviceName != deviceName || owner.retiring)) return
         OalLog.i(TAG, "User selected USB device: ${device.deviceName} " +
@@ -716,27 +776,29 @@ class UsbConnectionManager(
         consent.retry(deviceName)
         _connectionState.value = UsbConnectionState.DEVICE_DETECTED
         _status.value = "Requesting permission for ${friendlyNameFor(device)}..."
-        requestPermissionOrConnect(device)
+        requestPermissionOrConnect(device, consentGranted = false, explicitUserSelection = true)
     }
 
     private fun requestPermissionOrConnect(device: UsbDevice) = requestPermissionOrConnect(device, false)
 
-    private fun offerCandidate(device: UsbDevice) {
+    private fun offerCandidate(device: UsbDevice, explicitUserSelection: Boolean = false) {
         if (device.deviceName in rejectedDeviceNames) return
         val callback = onCandidate ?: return
         val candidate = consent.offer(device.deviceName, device.vendorId) ?: return
         pendingCandidateGeneration = candidate.generation
+        pendingSelection = PendingSelection(candidate.generation, device, explicitUserSelection)
         callback(candidate.generation, device)
     }
 
-    @Synchronized private fun requestPermissionOrConnect(device: UsbDevice, consentGranted: Boolean) {
+    @Synchronized private fun requestPermissionOrConnect(device: UsbDevice, consentGranted: Boolean,
+        explicitUserSelection: Boolean = false) {
         if (!isRunning || device.deviceName in rejectedDeviceNames) return
         // Passive observation never requests permission or changes the current projection owner.
         // Existing dispatch ownership covers validated AOA / Apple re-enumeration only.
         val owner = dispatchOwnership.current()
         if (!consentGranted && onCandidate != null &&
             (owner == null || owner.deviceName != device.deviceName || owner.retiring)) {
-            offerCandidate(device)
+            offerCandidate(device, explicitUserSelection)
             return
         }
         // Apple devices are never AOA candidates, even when CarPlay is disabled.
@@ -744,6 +806,7 @@ class UsbConnectionManager(
             if (currentPipe != null || connectClaimed.get() || retirementPending.get()) return
             val token = dispatchOwnership.select(device.deviceName, device.vendorId) ?: return
             selectedIphone = device
+            explicitIphoneSelection = token.takeIf { explicitUserSelection }
             val accepted = runCatching { onIphoneSelected(device) }.getOrDefault(false)
             if (!accepted) {
                 rejectedDeviceNames.add(device.deviceName)
