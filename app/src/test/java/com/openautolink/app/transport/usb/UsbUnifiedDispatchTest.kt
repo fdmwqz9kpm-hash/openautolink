@@ -96,6 +96,61 @@ class UsbUnifiedDispatchTest {
         assertEquals(1, retirements)
     }
 
+    @Test fun `rejected request disarms exact still attached owner deadline without releasing selection`() {
+        var retirements = 0
+        var selections = 0
+        val manager = running(UsbConnectionManager(context, scope, {}, onIphoneSelected = { selections++; true },
+            onIphoneDetached = { _, _ -> retirements++ }))
+        every { usb.deviceList } returns hashMapOf(device.deviceName to device)
+        every { usb.hasPermission(device) } returns true
+        call(manager, "requestPermissionOrConnect", device)
+        val callbacks = manager.iphoneReenumerationCallbacks(device)
+        assertTrue(callbacks.first())
+        assertTrue("Rejected request must acknowledge unchanged owner, not leave a live deadline", callbacks.second(device))
+        assertFalse("Acknowledgement is single use", callbacks.second(device))
+        scope.runCurrent(); scope.advanceTimeBy(15_001); scope.runCurrent()
+        assertEquals(0, retirements)
+        call(manager, "requestPermissionOrConnect", device)
+        assertEquals(1, selections)
+        call(manager, "handleDeviceDetached", device)
+        scope.runCurrent(); scope.advanceTimeBy(3_001); scope.runCurrent()
+        assertEquals(1, retirements)
+    }
+
+    @Test fun `unchanged acknowledgement cannot undo detach or lost platform permission`() {
+        val manager = running(UsbConnectionManager(context, scope, {}, onIphoneSelected = { true }))
+        every { usb.deviceList } returns hashMapOf(device.deviceName to device)
+        every { usb.hasPermission(device) } returns true
+        call(manager, "requestPermissionOrConnect", device)
+        val callbacks = manager.iphoneReenumerationCallbacks(device)
+        assertTrue(callbacks.first())
+        every { usb.hasPermission(device) } returns false
+        assertFalse(callbacks.second(device))
+        every { usb.hasPermission(device) } returns true
+        call(manager, "handleDeviceDetached", device)
+        assertFalse(callbacks.second(device))
+    }
+
+    @Test fun `unchanged acknowledgement cannot adopt same name replacement or successor generation`() {
+        val manager = running(UsbConnectionManager(context, scope, {}, onIphoneSelected = { true }))
+        every { usb.deviceList } returns hashMapOf(device.deviceName to device)
+        every { usb.hasPermission(device) } returns true
+        call(manager, "requestPermissionOrConnect", device)
+        val callbacks = manager.iphoneReenumerationCallbacks(device)
+        val release = manager.iphoneRetirementAcknowledgement(device)
+        assertTrue(callbacks.first())
+        val impostor = phone(device.deviceName, 0x05ac, device.productId)
+        every { impostor.deviceId } returns 99
+        every { usb.deviceList } returns hashMapOf(device.deviceName to impostor)
+        assertFalse(callbacks.second(device))
+        assertFalse(callbacks.second(impostor))
+        release()
+        val successor = phone("/dev/bus/usb/001/004", 0x05ac)
+        call(manager, "requestPermissionOrConnect", successor)
+        assertFalse(callbacks.second(device))
+        assertTrue(manager.iphoneReenumerationCallbacks(successor).first())
+    }
+
     @Test fun `unverified Apple attach cannot cancel ordinary detach grace`() {
         var retirements = 0
         val manager = running(UsbConnectionManager(context, scope, {}, onIphoneSelected = { true },

@@ -42,16 +42,30 @@ class OverlayButtonPositionTest {
     }
 
     /** Supplemental source wiring guard; rectangle/persistence behavior is tested above. */
-    @Test fun `every shared AA CarPlay button receives measured parent geometry`() {
+    @Test fun `single AA CarPlay logo uses measured geometry and long press without fixed recovery`() {
         val controls = java.io.File("src/main/java/com/openautolink/app/ui/components/ProjectionOverlayControls.kt").readText()
-        assertEquals(7, Regex("viewport = viewport,").findAll(controls).count())
-        assertTrue(controls.contains("modifier = modifier.fillMaxSize().onGloballyPositioned"))
+        assertEquals(1, Regex("DraggableOverlayButton\\(").findAll(controls).count())
+        assertTrue(controls.contains("BoxWithConstraints("))
+        assertTrue(controls.contains("LocalOverlaySafeAreaOrigin.current"))
+        assertTrue(controls.contains("R.drawable.ic_oal_glyph"))
+        assertFalse(controls.contains("overlayRecoveryButton"))
+        assertFalse(controls.contains("padding(top = 56.dp)"))
+        for (legacyToggle in listOf("overlayStatsButton", "overlayPhoneSwitchButton", "overlayReconnectButton")) {
+            assertFalse("menu must not hide useful actions behind $legacyToggle", controls.contains("uiState.$legacyToggle"))
+        }
+        assertTrue("ignition simulation retains its maintainer opt-in",
+            controls.contains("onSimulateIgnition != null && uiState.simulateIgnitionButton"))
         val button = java.io.File("src/main/java/com/openautolink/app/ui/components/DraggableOverlayButton.kt").readText()
         assertTrue(button.contains(".absoluteOffset"))
-        assertTrue(button.contains(".pointerInput(geometry, store)"))
+        assertTrue(button.contains(".pointerInput(geometry, store, resetEpoch)"))
+        assertTrue(button.contains("detectDragGesturesAfterLongPress"))
+        assertTrue(button.contains("CircleShape"))
         assertFalse(button.contains(".pointerInput(Unit)"))
-        assertTrue(button.contains("if (measured != geometry)"))
-        assertTrue(button.contains("store?.readOffset(measured, initialPx)"))
+        assertFalse("never infer anchor from offset coordinates", button.contains("positionInRoot"))
+        assertTrue(button.contains("remember(store, geometry, resetEpoch)"))
+        assertTrue(button.contains("store.readOffset(geometry"))
+        assertTrue("listen for external reset", button.contains("registerOnSharedPreferenceChangeListener"))
+        assertTrue("ordinary writes must not restart active drags", button.contains("!preferences.contains(changedKey)"))
         assertFalse("empty projection space must not intercept maps", controls.contains("pointerInput"))
     }
 

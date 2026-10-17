@@ -1,7 +1,6 @@
 package com.openautolink.app.ui.navigation
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -35,7 +34,9 @@ object AppDestinations {
 }
 
 @Composable
-fun AppNavHost(navController: NavHostController = rememberNavController()) {
+fun AppNavHost(
+    navController: NavHostController = rememberNavController(),
+) {
     // Share ViewModels across screens
     val settingsViewModel: SettingsViewModel = viewModel()
     val projectionViewModel: ProjectionViewModel = viewModel()

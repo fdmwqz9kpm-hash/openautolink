@@ -48,6 +48,8 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         /** Retained only to remove the former Boolean toggle on the next write. */
         val EXPERIMENTAL_GAL6 = booleanPreferencesKey("experimental_gal6")
         val DISPLAY_MODE = stringPreferencesKey("display_mode")
+        /** OAL controls/text only; never used for projection DPI or video geometry. */
+        val OAL_UI_SCALE_PERCENT = intPreferencesKey("oal_ui_scale_percent")
         val MIC_SOURCE = stringPreferencesKey("mic_source")
         // Manual override for the head unit's Bluetooth MAC, advertised in
         // the AA ServiceDiscoveryResponse's bluetooth_service.car_address.
@@ -265,6 +267,14 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_VIDEO_FPS = 60
         const val DEFAULT_GAL_VERSION = "6.0"
         const val DEFAULT_DISPLAY_MODE = "fullscreen_immersive"
+        const val DEFAULT_OAL_UI_SCALE_PERCENT = 125
+
+        /** Clamp out-of-range values and snap old/corrupt values to the nearest choice. */
+        fun normalizeOalUiScalePercent(percent: Int): Int = when (percent.coerceIn(100, 150)) {
+            in 100..112 -> 100
+            in 113..137 -> 125
+            else -> 150
+        }
         const val DEFAULT_MIC_SOURCE = "car"
         const val DEFAULT_BT_MAC_OVERRIDE = ""
         const val DEFAULT_SYNC_AA_THEME = true
@@ -465,6 +475,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     val displayMode: Flow<String> = dataStore.data.map { prefs ->
         prefs[DISPLAY_MODE] ?: DEFAULT_DISPLAY_MODE
+    }
+
+    val oalUiScalePercent: Flow<Int> = dataStore.data.map { prefs ->
+        normalizeOalUiScalePercent(prefs[OAL_UI_SCALE_PERCENT] ?: DEFAULT_OAL_UI_SCALE_PERCENT)
     }
 
     val micSource: Flow<String> = dataStore.data.map { prefs ->
@@ -844,6 +858,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setDisplayMode(mode: String) {
         dataStore.edit { it[DISPLAY_MODE] = mode }
+    }
+
+    suspend fun setOalUiScalePercent(percent: Int) {
+        dataStore.edit { it[OAL_UI_SCALE_PERCENT] = normalizeOalUiScalePercent(percent) }
     }
 
     suspend fun setMicSource(source: String) {

@@ -297,6 +297,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     val transition = selectedManager?.iphoneReenumerationCallbacks(device)
                         ?: Pair({ false }, { _: android.hardware.usb.UsbDevice -> false })
                     val retired = selectedManager?.iphoneRetirementAcknowledgement(device) ?: {}
+                    val permission = selectedManager?.iphonePermissionCallbacks(device) ?: Pair({ false }, { false })
                     val saved = kotlinx.coroutines.runBlocking { preferences.carPlaySettings.first() }
                     if (!saved.enabled || usbOverrideGeneration == null) false else {
                         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -309,8 +310,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                                 }
                                 val accepted = carPlayCoordinator.connect(true) { report ->
                                     try {
-                                        check(dispatchEpoch == usbDispatchEpoch.get() && usbOverrideGeneration != null)
-                                        createProjectionCarPlayRuntime(report, device, transition.first, transition.second, retired)
+                                        check(dispatchEpoch == usbDispatchEpoch.get() && usbOverrideGeneration == generation)
+                                        createProjectionCarPlayRuntime(report, device, transition.first, transition.second, retired,
+                                            permission.first, permission.second)
                                     } catch (failure: Exception) { retired(); throw failure }
                                 }
                                 if (!accepted) retired()
@@ -392,7 +394,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     },
                     admit = {
                         sessionManager.externalUsbTransport = true
-                        manager.accept(generation).also { if (it) usbHandoff.admitted() }
+                        manager.accept(generation, explicitUserSelection = !automatic).also { if (it) usbHandoff.admitted() }
                     },
                     cleared = {
                         manager.failedAdmission(generation)
@@ -488,6 +490,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         beginTransition: () -> Boolean = { false },
         acceptReplacement: (android.hardware.usb.UsbDevice) -> Boolean = { false },
         retired: () -> Unit = {},
+        initialPermissionOwner: () -> Boolean = { true },
+        consumeExplicitPermissionRetry: () -> Boolean = { false },
     ): com.openautolink.app.carplay.CarPlayRuntime =
         kotlinx.coroutines.runBlocking {
             val saved = preferences.carPlaySettings.first()
@@ -521,7 +525,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 check(usbOverrideGeneration != null) { "Transient USB selection retired" }
                 val runtime = com.openautolink.app.carplay.OalUsbCarPlayRuntime(getApplication(), usbDevice, display, surface, report,
                     onDisplayQualified = { _carPlayDisplay.value = it },
-                    onReenumerationStarted = beginTransition, onReplacementAccepted = acceptReplacement)
+                    onReenumerationStarted = beginTransition, onReplacementAccepted = acceptReplacement,
+                    initialPermissionOwner = initialPermissionOwner,
+                    consumeExplicitPermissionRetry = consumeExplicitPermissionRetry)
                 // The captured valid surface qualified this session's geometry only. The
                 // coordinator installs the latest presentation after factory completion.
                 runtime.detachSurface(surface)

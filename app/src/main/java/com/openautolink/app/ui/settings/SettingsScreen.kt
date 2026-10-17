@@ -1,11 +1,17 @@
 package com.openautolink.app.ui.settings
 
+import com.openautolink.app.ui.components.OalAlertDialog
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,6 +27,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BugReport
@@ -31,6 +39,10 @@ import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VideoSettings
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,6 +71,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -76,12 +89,13 @@ import com.openautolink.app.data.AppPreferences
 import com.openautolink.app.transport.aasdk.GalProtocolPolicy
 import com.openautolink.app.ui.components.LocalEchoTextField
 import androidx.compose.material3.FilterChip
+import com.openautolink.app.ui.theme.OalUiScale
 
 // Standard MAC form aa:bb:cc:dd:ee:ff. gearhead rejects anything else
 // (WIFI_INVALID_BSSID) before it will attempt projection.
 private val BSSID_PATTERN = Regex("^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 
-private enum class SettingsTab(
+internal enum class SettingsTab(
     val title: String,
     val icon: ImageVector,
 ) {
@@ -124,6 +138,24 @@ fun SettingsScreen(
     onNavigateToCarPlaySafeAreaEditor: () -> Unit = {},
     activeProtocolStatus: String? = null,
 ) {
+    OalUiScale {
+        SettingsScreenContent(viewModel, sessionState, onSaveAndConnect, onBack,
+            onNavigateToDiagnostics, onNavigateToSafeAreaEditor,
+            onNavigateToCarPlaySafeAreaEditor, activeProtocolStatus)
+    }
+}
+
+@Composable
+private fun SettingsScreenContent(
+    viewModel: SettingsViewModel,
+    sessionState: SessionState,
+    onSaveAndConnect: () -> Unit,
+    onBack: () -> Unit,
+    onNavigateToDiagnostics: () -> Unit,
+    onNavigateToSafeAreaEditor: () -> Unit,
+    onNavigateToCarPlaySafeAreaEditor: () -> Unit,
+    activeProtocolStatus: String?,
+) {
     val uiState by viewModel.settingsState.collectAsStateWithLifecycle()
     val carPlaySaving by viewModel.carPlaySettingsSaving.collectAsStateWithLifecycle()
     val carPlayLoaded by viewModel.carPlaySettingsLoaded.collectAsStateWithLifecycle()
@@ -140,57 +172,19 @@ fun SettingsScreen(
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .testTag("settingsScreen"),
         ) {
-            // Left rail — back button + tab icons
-            Column(
-                modifier = Modifier.fillMaxHeight(),
-            ) {
-                // Back button
-                Box(modifier = Modifier.padding(vertical = 16.dp, horizontal = 12.dp)) {
-                    FilledTonalIconButton(
-                        onClick = onBack,
-                        enabled = !carPlaySaving,
-                        modifier = Modifier.size(56.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
-                }
-
-                // Tab rail
-                NavigationRail(
-                    modifier = Modifier.weight(1f),
-                    containerColor = MaterialTheme.colorScheme.background,
-                ) {
-                    Spacer(modifier = Modifier.weight(1f))
-                    SettingsTab.entries.forEach { tab ->
-                        NavigationRailItem(
-                            selected = selectedTab == tab,
-                            onClick = {
-                                selectedTab = tab
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = tab.icon,
-                                    contentDescription = tab.title,
-                                )
-                            },
-                            label = { Text(tab.title) },
-                            modifier = Modifier.padding(vertical = 8.dp),
-                        )
-                    }
-                    Spacer(modifier = Modifier.weight(1f))
-                }
-            }
+            SettingsTabRail(
+                selectedTab = selectedTab,
+                onSelectTab = { selectedTab = it },
+                onBack = onBack,
+                backEnabled = !carPlaySaving,
+            )
 
             // Content pane — fills remaining width
             Column(
                 modifier = Modifier
                     .fillMaxHeight()
                     .weight(1f)
-                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
             ) {
                 // Connection status bar + Save & Connect button — always visible
                 ConnectionStatusBar(
@@ -236,6 +230,57 @@ fun SettingsScreen(
     }
 }
 
+/** Independent scrolling keeps every tab reachable without moving the back button. */
+@Composable
+internal fun SettingsTabRail(
+    selectedTab: SettingsTab,
+    onSelectTab: (SettingsTab) -> Unit,
+    onBack: () -> Unit,
+    backEnabled: Boolean = true,
+) {
+    Column(Modifier.fillMaxHeight().width(112.dp)) {
+        Box(Modifier.padding(vertical = 8.dp, horizontal = 12.dp)) {
+            FilledTonalIconButton(onClick = onBack, enabled = backEnabled, modifier = Modifier.size(56.dp)) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", modifier = Modifier.size(24.dp))
+            }
+        }
+        NavigationRail(
+            modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).testTag("settingsTabRail"),
+            containerColor = MaterialTheme.colorScheme.background,
+            windowInsets = WindowInsets(0, 0, 0, 0),
+        ) {
+            SettingsTab.entries.forEach { tab ->
+                NavigationRailItem(
+                    selected = selectedTab == tab,
+                    onClick = { onSelectTab(tab) },
+                    icon = { Icon(tab.icon, contentDescription = null) },
+                    label = { Text(tab.title) },
+                    modifier = Modifier.padding(vertical = 4.dp).testTag("settingsTab_${tab.name}"),
+                )
+            }
+        }
+    }
+}
+
+/** Small effective widths stack labels instead of squeezing out the input. */
+@Composable
+internal fun SettingsLabeledControl(label: String, content: @Composable () -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        if (maxWidth < 400.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(label, style = MaterialTheme.typography.bodyLarge)
+                Row(verticalAlignment = Alignment.CenterVertically) { content() }
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                content()
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ConnectionStatusBar(
     sessionState: SessionState,
@@ -259,12 +304,12 @@ private fun ConnectionStatusBar(
         SessionState.ERROR -> "Error"
     }
 
-    Row(
+    FlowRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         // Save & Connect button — left-aligned, first element
         Button(
@@ -311,6 +356,7 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
     ) {
+        SettingsVersionInfo()
         SectionHeader("Normal connections")
         Text("Android Auto and CarPlay keep separate normal connections. A USB phone can temporarily take over after you confirm; saved modes stay unchanged.",
             style = MaterialTheme.typography.bodySmall,
@@ -526,7 +572,7 @@ private fun OverlayButtonToggle(
 ) {
     Row(
         modifier = Modifier
-            .fillMaxWidth(0.7f)
+            .fillMaxWidth()
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -550,6 +596,43 @@ private fun OverlayButtonToggle(
     }
 }
 
+/** Stateless production control: no projection ViewModel or reconnect dependency. */
+@Composable
+internal fun OalInterfaceSizeSetting(percent: Int, onPercentChange: (Int) -> Unit) {
+    Column(Modifier.fillMaxWidth().selectableGroup()) {
+        SectionHeader("OAL interface size")
+        Text(
+            "Sizes OpenAutoLink's own controls and text. Applies immediately, without reconnecting. " +
+                "This is NOT Android Auto or CarPlay DPI and does not resize the projected video. " +
+                "Your Android font-size preference is preserved.",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(vertical = 8.dp),
+        )
+        listOf(100 to "Normal · 100%", 125 to "Large · 125% (recommended)",
+            150 to "Extra Large · 150%").forEach { (size, label) ->
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    .selectable(selected = percent == size, role = Role.RadioButton,
+                        onClick = { onPercentChange(size) })
+                    .testTag("oalUiScale_$size").padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = percent == size, onClick = null)
+                Spacer(Modifier.width(12.dp))
+                Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            }
+        }
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("oalUiScalePreview")) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Preview · OAL controls and text", style = MaterialTheme.typography.bodyLarge)
+                Text("This preview uses your current interface size.", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DisplayTab(
     viewModel: SettingsViewModel,
@@ -562,6 +645,8 @@ private fun DisplayTab(
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
     ) {
+        OalInterfaceSizeSetting(uiState.oalUiScalePercent, viewModel::updateOalUiScalePercent)
+        Spacer(Modifier.height(16.dp))
         SectionHeader("Shared")
         SectionHeader("Display Mode")
 
@@ -580,7 +665,7 @@ private fun DisplayTab(
         displayModes.forEach { mode ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { viewModel.updateDisplayMode(mode.key) }
                     .padding(vertical = 10.dp)
                     .testTag("displayMode_${mode.key}"),
@@ -591,7 +676,7 @@ private fun DisplayTab(
                     onClick = { viewModel.updateDisplayMode(mode.key) }
                 )
                 Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = mode.label,
                         style = MaterialTheme.typography.bodyLarge,
@@ -608,7 +693,7 @@ private fun DisplayTab(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -618,7 +703,7 @@ private fun DisplayTab(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -638,11 +723,12 @@ private fun DisplayTab(
                 modifier = Modifier.padding(bottom = 12.dp)
             )
 
-            Row(
+            FlowRow(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .padding(bottom = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 data class LayoutPreset(val dp: Int, val label: String)
                 listOf(
@@ -736,7 +822,7 @@ private fun DisplayTab(
                 shape = MaterialTheme.shapes.small,
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .padding(bottom = 12.dp)
                     .clickable { dpiInfoExpanded = !dpiInfoExpanded }
             ) {
@@ -856,7 +942,7 @@ private fun DisplayTab(
         // manual slider value is sent literally.
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -895,15 +981,16 @@ private fun DisplayTab(
             valueRange = 80f..640f,
             steps = 0,
             enabled = dpiSliderEnabled,
-            modifier = Modifier.fillMaxWidth(0.7f)
+            modifier = Modifier.fillMaxWidth()
         )
 
         // Quick presets — laid out as chips, not aligned to slider
-        Row(
+        FlowRow(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(top = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             listOf(96, 132, 160, 200, 240, 320, 480).forEach { preset ->
                 val isSelected = uiState.aaDpi == preset
@@ -930,7 +1017,7 @@ private fun DisplayTab(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -955,7 +1042,7 @@ private fun DisplayTab(
         ).forEach { (key, label) ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { viewModel.updateVideoScalingMode(key) }
                     .padding(vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -975,7 +1062,7 @@ private fun DisplayTab(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -996,17 +1083,7 @@ private fun DisplayTab(
             modifier = Modifier.padding(bottom = 12.dp)
         )
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "Auto-compute margins",
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.width(220.dp),
-            )
+        SettingsLabeledControl(label = "Auto-compute margins") {
             Switch(
                 checked = uiState.aaAutoMargins,
                 onCheckedChange = { viewModel.updateAaAutoMargins(it) },
@@ -1015,17 +1092,7 @@ private fun DisplayTab(
         }
 
         // Width Margin
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "Width Margin",
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.width(140.dp),
-            )
+        SettingsLabeledControl(label = "Width Margin") {
             LocalEchoTextField(
                 value = if (uiState.aaWidthMargin == 0) "" else uiState.aaWidthMargin.toString(),
                 onValueChange = { filtered ->
@@ -1042,17 +1109,7 @@ private fun DisplayTab(
         }
 
         // Height Margin
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "Height Margin",
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.width(140.dp),
-            )
+        SettingsLabeledControl(label = "Height Margin") {
             LocalEchoTextField(
                 value = if (uiState.aaHeightMargin == 0) "" else uiState.aaHeightMargin.toString(),
                 onValueChange = { filtered ->
@@ -1092,17 +1149,7 @@ private fun DisplayTab(
             modifier = Modifier.padding(bottom = 12.dp)
         )
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "Viewing Distance",
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.width(140.dp),
-            )
+        SettingsLabeledControl(label = "Viewing Distance") {
             LocalEchoTextField(
                 value = if (uiState.aaViewingDistanceMm == 0) "" else uiState.aaViewingDistanceMm.toString(),
                 onValueChange = { filtered ->
@@ -1118,17 +1165,7 @@ private fun DisplayTab(
             Text("mm", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "Decoder Add'l Depth",
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.width(140.dp),
-            )
+        SettingsLabeledControl(label = "Decoder Add'l Depth") {
             LocalEchoTextField(
                 value = if (uiState.aaDecoderAdditionalDepth == 0) "" else uiState.aaDecoderAdditionalDepth.toString(),
                 onValueChange = { filtered ->
@@ -1146,7 +1183,7 @@ private fun DisplayTab(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -1180,7 +1217,7 @@ private fun DisplayTab(
         pixelAspectModes.forEach { (key, label) ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable {
                         when (key) {
                             "off" -> viewModel.updateAaPixelAspect(0)
@@ -1207,17 +1244,7 @@ private fun DisplayTab(
 
         // Show manual input only when manual mode selected
         if (pixelAspectMode == "manual") {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth(0.7f)
-                    .padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Value (×10⁴)",
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.width(180.dp),
-                )
+            SettingsLabeledControl(label = "Value (×10⁴)") {
                 LocalEchoTextField(
                     value = uiState.aaPixelAspect.toString(),
                     onValueChange = { filtered ->
@@ -1263,12 +1290,12 @@ private fun DisplayTab(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(bottom = 12.dp)
         )
 
         Row(
-            modifier = Modifier.fillMaxWidth(0.7f),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1294,7 +1321,7 @@ private fun DisplayTab(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -1314,7 +1341,7 @@ private fun DisplayTab(
         listOf("left" to "Left-Hand Drive (LHD)", "right" to "Right-Hand Drive (RHD)").forEach { (key, label) ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { viewModel.updateDriveSide(key) }
                     .padding(vertical = 10.dp)
                     .testTag("driveSide_$key"),
@@ -1336,7 +1363,7 @@ private fun DisplayTab(
         Spacer(modifier = Modifier.height(24.dp))
         } // Column (Drive Side)
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -1348,7 +1375,7 @@ private fun DisplayTab(
         // GPS Forwarding
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1374,7 +1401,7 @@ private fun DisplayTab(
         // Always in Park
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1404,7 +1431,7 @@ private fun DisplayTab(
         // Cluster Navigation
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1430,7 +1457,7 @@ private fun DisplayTab(
         // IMU Sensors
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1455,49 +1482,24 @@ private fun DisplayTab(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // --- Overlay Buttons ---
-        SectionHeader("Overlay Buttons")
-
+        // --- OAL controls menu ---
+        SectionHeader("OAL controls menu")
         Spacer(modifier = Modifier.height(4.dp))
-
         Text(
-            text = "Customize floating overlay buttons during streaming.",
+            text = "Tap the OAL logo during projection for Settings, phone switching, reconnect and diagnostics. " +
+                "Long-press and drag the logo to move it. Its preferred position returns when screen space is available again.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 12.dp)
-        )
-
-        OverlayButtonToggle(
-            title = "Stats Button",
-            description = "Floating button to toggle performance stats overlay.",
-            checked = uiState.overlayStatsButton,
-            onCheckedChange = viewModel::updateOverlayStatsButton,
-            testTag = "overlayStatsToggle",
-        )
-
-        OverlayButtonToggle(
-            title = "Phone Switcher Button",
-            description = "Floating button to choose the active phone in Car Hotspot mode.",
-            checked = uiState.overlayPhoneSwitchButton,
-            onCheckedChange = viewModel::updateOverlayPhoneSwitchButton,
-            testTag = "overlayPhoneSwitchToggle",
-        )
-
-        OverlayButtonToggle(
-            title = "Reconnect Button",
-            description = "Floating button that runs the same action as Save & Reconnect.",
-            checked = uiState.overlayReconnectButton,
-            onCheckedChange = viewModel::updateOverlayReconnectButton,
-            testTag = "overlayReconnectToggle",
+            modifier = Modifier.padding(bottom = 12.dp),
         )
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -1508,7 +1510,7 @@ private fun DisplayTab(
 
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1535,7 +1537,7 @@ private fun DisplayTab(
         Column {
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1560,7 +1562,7 @@ private fun DisplayTab(
 
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1585,7 +1587,7 @@ private fun DisplayTab(
 
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1630,7 +1632,7 @@ private fun DisplayTab(
         distanceUnitOptions.forEach { (key, label) ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { viewModel.updateDistanceUnits(key) }
                     .padding(vertical = 6.dp)
                     .testTag("distanceUnits_$key"),
@@ -1676,7 +1678,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
         GalProtocolPolicy.supportedVersions.forEach { version ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { viewModel.updateGalVersion(version) }
                     .padding(vertical = 6.dp)
                     .testTag("galVersion_$version"),
@@ -1707,7 +1709,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
             modifier = Modifier.padding(bottom = 20.dp),
         )
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(20.dp))
 
@@ -1721,7 +1723,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Row(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
+                .fillMaxWidth()
                 .clickable { viewModel.updateVideoAutoNegotiate(!uiState.videoAutoNegotiate) }
                 .padding(vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -1742,7 +1744,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -1768,7 +1770,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
         ).forEach { (key, label, suffix) ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { viewModel.updateVideoCodec(key) }
                     .padding(vertical = 10.dp)
                     .testTag("videoCodec_$key"),
@@ -1789,7 +1791,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -1808,7 +1810,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
         listOf(30 to "30 FPS", 60 to "60 FPS").forEach { (fps, label) ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { viewModel.updateVideoFps(fps) }
                     .padding(vertical = 10.dp)
                     .testTag("videoFps_$fps"),
@@ -1829,7 +1831,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -1861,7 +1863,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
         ).forEach { (key, label) ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { viewModel.updateAaResolution(key) }
                     .padding(vertical = 10.dp)
                     .testTag("aaResolution_$key"),
@@ -1884,7 +1886,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -1899,7 +1901,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
                 "10,000 bytes, H.265 4,096 bytes, VP9 disabled. Requires Save & Reconnect.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth(0.7f).padding(bottom = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
         )
 
         data class SeedThresholdOption(
@@ -1938,7 +1940,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
                 supportingText = { Text("0 disables this codec's seed filter") },
                 singleLine = true,
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .padding(vertical = 4.dp)
                     .testTag(option.testTag),
             )
@@ -2062,7 +2064,7 @@ private fun InputTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
             Surface(
                 color = MaterialTheme.colorScheme.tertiaryContainer,
                 shape = MaterialTheme.shapes.small,
-                modifier = Modifier.fillMaxWidth(0.7f).padding(bottom = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
             ) {
                 Text(
                     "Last key: ${lastDetectedKey!!.second} (${lastDetectedKey!!.first})",
@@ -2084,7 +2086,7 @@ private fun InputTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { captureTarget = action }
                     .padding(vertical = 8.dp, horizontal = 4.dp)
                     .testTag("keyMap_${action.aaKeycode}"),
@@ -2110,7 +2112,7 @@ private fun InputTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
                     color = MaterialTheme.colorScheme.outline,
                 )
             }
-            HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+            HorizontalDivider(modifier = Modifier.fillMaxWidth())
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -2159,7 +2161,7 @@ private fun InputTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
             }
         }
 
-        androidx.compose.material3.AlertDialog(
+        OalAlertDialog(
             onDismissRequest = { captureTarget = null; lastDetectedKey = null },
             title = { Text("Assign key to: ${target.label}") },
             text = {
@@ -2232,7 +2234,7 @@ private fun AudioTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
         micSourceOptions.forEach { option ->
             Row(
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth()
                     .clickable { viewModel.updateMicSource(option.key) }
                     .padding(vertical = 10.dp)
                     .testTag("micSource_${option.key}"),
@@ -2260,7 +2262,7 @@ private fun AudioTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -2277,14 +2279,14 @@ private fun AudioTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
                 "This matches every factory head unit.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth(0.7f).padding(bottom = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
         )
 
         // BT MAC override — used in the SDR's bluetooth_service.car_address.
         // Some phones won't enter wireless AA pairing without a valid car MAC.
         // Does NOT affect call audio routing.
         Column(
-            modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         ) {
             Text(
                 text = "Bluetooth MAC override",
@@ -2313,7 +2315,7 @@ private fun AudioTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -2357,7 +2359,7 @@ private fun VolumeOffsetSlider(
     value: Int,
     onValueChange: (Int) -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 4.dp)) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -2405,7 +2407,7 @@ private val micSourceOptions = listOf(
 private fun SettingRow(label: String, value: String) {
     Row(
         modifier = Modifier
-            .fillMaxWidth(0.5f)
+            .fillMaxWidth()
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -2509,7 +2511,7 @@ private fun DiagnosticsSettingsTab(
         SectionHeader("File Logging")
 
         Row(
-            modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
@@ -2529,7 +2531,7 @@ private fun DiagnosticsSettingsTab(
         }
 
         Row(
-            modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
@@ -2552,7 +2554,7 @@ private fun DiagnosticsSettingsTab(
         }
 
         Row(
-            modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
@@ -2574,7 +2576,7 @@ private fun DiagnosticsSettingsTab(
         }
 
         Row(
-            modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
@@ -2602,7 +2604,7 @@ private fun DiagnosticsSettingsTab(
         }
 
         Row(
-            modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
@@ -2640,14 +2642,14 @@ private fun DiagnosticsSettingsTab(
         // OFF by default. Uploads recent diagnostic logs to the maintainer's
         // own server. Only meant for the maintainer's own car + phones.
         Row(
-            modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Upload Logs (maintainer)", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "Off by default. When on, a floating Upload button appears on " +
-                        "the projection screen; tapping it zips recent logs and POSTs " +
+                    "Off by default. When on, Upload Logs is available in the OAL " +
+                        "controls menu; selecting it zips recent logs and POSTs " +
                         "them to your own server for analysis. Only enable on your own " +
                         "devices — it never affects other users.",
                     style = MaterialTheme.typography.bodySmall,
@@ -2667,8 +2669,8 @@ private fun DiagnosticsSettingsTab(
             Column(modifier = Modifier.weight(1f)) {
                 Text("Simulate Ignition Cycle (maintainer)", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "Off by default. When on, a floating power button appears on " +
-                        "the projection screen. Tapping it disconnects, drops the " +
+                    "Off by default. When on, Simulate ignition cycle is available " +
+                        "in the OAL controls menu. Selecting it disconnects, drops the " +
                         "Bluetooth advertisement, waits 45 seconds, then brings it " +
                         "back.\n\n" +
                         "It cannot switch off the head unit's Bluetooth radio, so " +
@@ -2693,15 +2695,25 @@ private fun DiagnosticsSettingsTab(
                 label = { Text("Upload URL") },
                 placeholder = { Text("https://oal-logs.example.com/upload") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             )
+            // Disclosure is local to this field's composition, never saved or persisted.
+            var uploadTokenVisible by remember { mutableStateOf(false) }
             LocalEchoTextField(
                 value = uiState.logUploadToken,
                 onValueChange = { viewModel.updateLogUploadToken(it) },
                 label = { Text("Upload token") },
                 singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 4.dp),
+                visualTransformation = if (uploadTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { uploadTokenVisible = !uploadTokenVisible }) {
+                        Icon(
+                            imageVector = if (uploadTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = if (uploadTokenVisible) "Hide upload token" else "Show upload token",
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             )
             LocalEchoTextField(
                 value = uiState.logUploadDeviceLabel,
@@ -2709,7 +2721,7 @@ private fun DiagnosticsSettingsTab(
                 label = { Text("Device label") },
                 placeholder = { Text("Blazer Car") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(0.7f).padding(vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             )
         }
     }

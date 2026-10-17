@@ -41,8 +41,8 @@ android {
         applicationId = findProperty("appId") as? String ?: "com.fdmwqz9kpmhash.carlink"
         minSdk = 32
         targetSdk = 36
-        versionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 63
-        versionName = (findProperty("oalVersionName") as? String) ?: "0.1.63"
+        versionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 64
+        versionName = (findProperty("oalVersionName") as? String) ?: "0.1.64"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -102,6 +102,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     // NDK build for aasdk JNI
@@ -116,6 +117,7 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
     }
 
     lint {
@@ -197,6 +199,8 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.mockk)
     testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
 }

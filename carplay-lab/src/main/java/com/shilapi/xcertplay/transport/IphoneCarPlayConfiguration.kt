@@ -36,6 +36,10 @@ object IphoneCarPlayConfiguration {
         return chosen
     }
 
+    /** USBMUX+NCM may also be offered outside CarPlay mode (DiPlay 817ff3fa, #634). */
+    fun isCarPlayMode(configuration: UsbConfiguration): Boolean =
+        usbMuxInterface(configuration) != null && hasCdcNcm(configuration) && hasAppleEthernet(configuration)
+
     fun describe(configuration: UsbConfiguration): String =
         (0 until configuration.interfaceCount).joinToString(",") { index ->
             val usbInterface = configuration.getInterface(index)

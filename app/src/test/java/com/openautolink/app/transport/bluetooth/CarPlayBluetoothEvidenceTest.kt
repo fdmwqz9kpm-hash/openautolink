@@ -20,9 +20,20 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @org.robolectric.annotation.ConscryptMode(org.robolectric.annotation.ConscryptMode.Mode.OFF)
-@Config(sdk=[32], manifest=Config.NONE)
+@Config(application = android.app.Application::class, sdk=[32], manifest=Config.NONE)
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class CarPlayBluetoothEvidenceTest {
+    @Test fun applicationFixtureDoesNotBootProcessServices() {
+        // Config.NONE is ignored by Robolectric's AGP Build System API. Check
+        // the actual application, not just the annotation: OalApplication starts
+        // process-owned IO work that can outlive this test's Android sandbox.
+        assertEquals(
+            "This fixture must not boot OalApplication process services",
+            android.app.Application::class.java,
+            org.robolectric.RuntimeEnvironment.getApplication().javaClass,
+        )
+    }
+
     private val audio = "android.bluetooth.headsetclient.profile.action.AUDIO_STATE_CHANGED"
     private val ag = "android.bluetooth.headsetclient.profile.action.AG_EVENT"
     private val voice = "android.bluetooth.headsetclient.extra.VOICE_RECOGNITION"

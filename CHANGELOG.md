@@ -1,5 +1,80 @@
 # Changelog
 
+## 0.1.528
+
+### USB permission retry after explicit selection
+- Allow a fresh explicit selection of the currently attached iPhone to request USB access again after a denied permission result. Keep automatic retries suppressed and retain real platform permission enforcement.
+- Bind picker entries to manager-qualified attachment receipts so stale entries cannot authorize a replacement after detach, manager restart or same-address reattachment. Preserve one-shot owner, cancellation and replacement-consent fences.
+
+### CarPlay return to the car
+- Supply the OpenAutoLink logo and label for CarPlay's return-to-car tile.
+- Route authenticated, current-session generic return requests to background OAL without stopping CarPlay transport or audio. Reopening OAL retains the existing presentation reattachment path rather than deliberately reconnecting.
+- Reject stale-session and retired-Activity requests, coalesce repeated requests, and keep unsupported URL and video-player actions separate from generic return.
+- Physical iPhone tile rendering, OEM landing behavior, retained audio and same-session return still require vehicle verification. This does not fix the separately investigated Bluetooth audio interruption or explain the original permission-denied callback.
+- No companion behavior changes; matching GitHub companion APK is version-aligned only.
+
+## 0.1.527
+
+### CarPlay cluster guidance recovery
+- Preserve the route's bounded maneuver-definition cache when a quiet interval makes the displayed instruction stale. A fresh explicit turn selection can restore cluster guidance without requiring the iPhone to resend the same maneuver details.
+- Keep stale instructions hidden until that confirmation, expire old distance/time estimates, and retain existing route-expiry, stop, arrival, cancellation and host-stop behavior. Do not hold an obsolete turn on screen indefinitely.
+- Add parser-to-host regression coverage for the captured quiet-interval failure and deadline, selection, cache-bound and route-replacement cases. Vehicle recovery still requires confirmation on this build.
+
+### Uninterrupted launcher entry
+- Remove the automatic Projection controls dialog when opening or returning to OAL from the launcher. Continue directly to the normal app screen.
+- Keep Settings and Restore button positions available through the movable OAL-logo menu. Projection connections, saved transport choices and VPN/upload routing are unchanged.
+- No companion behavior changes; the matching companion APK is version-aligned only and is not required for these car-side fixes.
+
+## 0.1.526
+
+### Wired CarPlay mode selection
+- Distinguish confirmed CarPlay mode (USBMUX, NCM and Apple Ethernet) from a compatible USBMUX/NCM configuration that still needs the mode request. Reuse confirmed mode without requesting another switch.
+- Attempt one bounded mode transition when needed. Preserve older-peer rejection fallback only for the unchanged attached, permitted device and current owner; retain replacement consent and detach/cancellation fences.
+- Add finite mode-decision, transition-result and selected-descriptor receipts to uploaded logs. No raw device identifiers, packet replay, generic USB resets, audio or authentication changes.
+- Correct the Release APK badge to show actual release-event runs instead of a historical cancelled manual build; failed release builds still show red.
+- Full debug/release app, receiver and companion verification: 4,170 tests, zero failures/errors, two existing optional private replay skips. Independent exact-tree review passed. Physical first-connect/replug improvement and the cause of the prior vehicle failure remain unproven until vehicle testing.
+- No companion behavior changes; matching GitHub companion APK is version-aligned only.
+
+## 0.1.525
+
+### One movable OAL controls menu
+- Replace separate floating buttons with one OAL-logo button. Tap for supported actions; hold and drag to reposition it. Start centered, with a one-time drag hint.
+- Reclaim the fixed recovery strip and hidden-system-bar space while respecting visible system controls and cutouts. Preserve preferred placement across temporary window, inset and UI-size changes; Restore button positions recenters the logo.
+- Keep diagnostic/maintainer enable gates. Normal menu actions no longer depend on retired floating-button visibility settings, including previously hidden Phone Switcher buttons.
+- Offer best-effort launcher re-entry recovery without interrupting fresh startup. Actual GM launcher delivery remains unverified.
+- Default native OAL interface size to 125% without overriding saved choices. Display the build version in Settings with a small internet-enabled Wi-Fi update reminder.
+- Leave Android Auto/CarPlay video geometry, projected touch mapping and stream scaling unchanged. Vehicle display-transition acceptance remains pending.
+
+### Bounded CarPlay startup diagnostics
+- Add sanitized startup packet classifications and native USB write timing to distinguish forwarding, write completion, and control-connection admission.
+- Exclude diagnostic observer work from native write timing; stop new reservations at accepted-owner admission, before fallible session setup. Keep disabled/capped observations out of the diagnostic monitor.
+- Preserve exact-owner retirement and bounded export in uploaded logs without raw network identities or payload bytes. No new retries, framing, timeout policy, authentication or audio changes; this does not claim faster startup or phone consumption.
+
+### Test isolation and compatibility
+- Keep JVM component fixtures from unintentionally starting process-wide Bluetooth services; add runtime application-identity regressions without weakening token-visibility assertions.
+- No companion source or behavior changes. The matching public companion APK is version-aligned only; these car-side changes do not require a companion update.
+
+## 0.1.524
+
+### CarPlay startup diagnostics and bounded writes
+- Bound USB NCM writes so a stalled endpoint cannot wait indefinitely. Report control-listener timing and endpoint-write receipts without claiming that receipt proves peer consumption or first video.
+- Preserve USB authorization, session ownership, first-video recovery and admission checks. Startup timing and sustained projection still require vehicle verification.
+
+### Log-upload token visibility
+- Add an accessible Show/Hide upload token action. Tokens start masked; disclosure is local, resets when leaving/reopening the field, and does not persist or change the token.
+
+### OAL interface size
+- Add Normal, Large, and Extra Large sizes for OAL menus, text, and controls, independent of Android Auto/CarPlay stream settings. Apply immediately without reconnecting and preserve the system font-size preference.
+- Keep settings navigation scrollable at larger sizes and use the available settings-pane width. Normal preserves the existing size; Large is the recommended option when the car UI is too small.
+
+### Floating-control recovery
+- Measure floating buttons independently so shrinking the display does not squeeze later buttons or their icons away. Default positions wrap into extra columns when needed.
+- Keep a fixed OAL controls menu separate from draggable positions. It provides Settings and every enabled/supported action even when saved buttons overlap; Restore button positions resets only overlay placements, including disabled controls.
+- Reproject saved positions from known layout geometry instead of inferring anchors from already-offset buttons. Cancel stale drags when the available area changes.
+- On windows too small for the full set of buttons, use the fixed menu rather than shrinking or stacking inaccessible controls.
+- Bound controls to the clipped, system-bar/cutout-safe window area without changing the video viewport. Keep them above the Stats panel and preserve physical placement in right-to-left layouts.
+- Does not change Android Auto/CarPlay stream scaling, touch mapping, connection behavior, or other saved settings. Vehicle confirmation is still required.
+
 ## 0.1.523
 
 ### CarPlay first-video recovery

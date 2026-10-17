@@ -34,6 +34,8 @@ class OalUsbCarPlayRuntime(
     private val onDisplayQualified: (CarPlayDisplayPreferences) -> Unit = {},
     private val onReenumerationStarted: () -> Boolean = { false },
     private val onReplacementAccepted: (UsbDevice) -> Boolean = { false },
+    private val initialPermissionOwner: () -> Boolean = { true },
+    private val consumeExplicitPermissionRetry: () -> Boolean = { false },
 ) : CarPlayRuntime {
     private val canceled=AtomicBoolean()
     private val resourcesLock=Any()
@@ -95,9 +97,14 @@ class OalUsbCarPlayRuntime(
         check(!canceled.get()) { "USB CarPlay attempt revoked" }
         resource
     }
+    private fun requestHostUi(isCurrent: () -> Boolean) {
+        CarPlayHostUi.request { !canceled.get() && isCurrent() }
+    }
+
     private fun ownReceiver(create: () -> ProjectionReceiver): ProjectionReceiver = synchronized(resourcesLock) {
         val projection = own(create)
         active()
+        projection.setHostUiHandler(::requestHostUi)
         receiver = projection
         presentation = initialPresentation // Constructor starts with the qualified bootstrap target.
         reconcilePresentation()
@@ -118,6 +125,7 @@ class OalUsbCarPlayRuntime(
         presentation = target
     }
     private var trustPending = false
+    private var permissionAwaitDenied = false
     private var topology = topology(device)
     private fun topology(value: UsbDevice) = UsbCarPlayTopology(value.deviceName, value.deviceId, value.vendorId, value.productId)
     private fun failureUi(reason: String) = CarPlayConnectionFailure(when(reason) {
@@ -141,21 +149,39 @@ class OalUsbCarPlayRuntime(
             val receipt = "CarPlay USB stage=failed reason=$reason"
             if(canceled.get()) audioDiagnostics.record(receipt) else status(receipt)
             if(reason == "CANCELLED") throw failure
-            retryFence.failed(topology, reason)
+            retryFence.failed(topology, reason, permissionAwaitDenied)
             throw failureUi(reason)
         }
+    }
+    private fun configurationAction(configuration: UsbConfiguration?, transitions: Int): String {
+        val appleEthernet=configuration?.let(IphoneCarPlayConfiguration::isCarPlayMode)==true
+        val action=when {
+            configuration!=null && appleEthernet -> "reuse-descriptors"
+            configuration!=null && transitions==1 -> "reuse-without-apple-ethernet"
+            transitions==0 -> "request-transition"
+            else -> "reject-missing-configuration"
+        }
+        status("CarPlay USB configuration found=${configuration!=null} appleEthernet=$appleEthernet transitions=$transitions decision=$action")
+        return action
     }
     private fun runConnection() {
         active()
         require(isCandidate(device)) { "Selected USB device lacks Apple USBMUX" }
         val usb=context.getSystemService(UsbManager::class.java) ?: error("USB host unavailable")
-        retryFence.blocked(topology, usb.deviceList.values.map(::topology).toSet())?.let { reason ->
+        // Consume on first admission even without a failure: the user's original selection
+        // cannot survive its own denial and authorize an automatic runtime rebuild.
+        val explicitPermissionRetry = consumeExplicitPermissionRetry()
+        if (!initialPermissionOwner()) throw CancellationException("USB selection retired before permission")
+        retryFence.blocked(topology, usb.deviceList.values.map(::topology).toSet(), explicitPermissionRetry)?.let { reason ->
             status("CarPlay USB stage=retry result=blocked")
             throw failureUi(reason)
         }
         status("CarPlay USB stage=usb-permission result=pending")
-        requirePermission(UsbCarPlayPermission.await(context, usb, device) { canceled.get() })
+        requirePermission(UsbCarPlayPermission.await(context, usb, device) {
+            canceled.get() || !initialPermissionOwner()
+        })
         active()
+        if (!initialPermissionOwner()) throw CancellationException("USB selection retired during permission")
         val serial=device.serialNumber?.takeIf { it.isNotBlank() } ?: error("Private USB serial required for exact ownership")
         VpnService.prepare(context)?.let {
             status("CarPlay USB stage=vpn-consent result=pending")
@@ -164,20 +190,42 @@ class OalUsbCarPlayRuntime(
         active()
         val host=IphoneUsbHost(context,usb,IphoneUsbMatcher.appleVendor())
         var selected=device
-        if(IphoneCarPlayConfiguration.find(selected)==null) {
+        val initialConfiguration=IphoneCarPlayConfiguration.find(selected)
+        // Pinned DiPlay WiredConfigurationAction: ready descriptors need no request;
+        // otherwise try once, retaining an older peer's still-valid rejected-request fallback.
+        if(configurationAction(initialConfiguration,0)=="request-transition") {
             val detached=AtomicBoolean(false)
             own { registerDetach(device.deviceName) { detached.set(true) } }
             check(onReenumerationStarted()) { "USB transition ownership unavailable" }
             val started=SystemClock.elapsedRealtime()
             var transition:IphoneUsbHost.TransitionResult?=null
+            active()
             host.requestCarPlayReenumerationAsync(device,Executor { it.run() }) { transition=it }
-            when(val result=transition) {
-                is IphoneUsbHost.TransitionResult.Failed -> throw result.error
-                is IphoneUsbHost.TransitionResult.ReenumerationRequested -> Unit
+            active()
+            val reenumerating=when(val result=transition) {
+                is IphoneUsbHost.TransitionResult.Failed -> {
+                    val attached=usb.deviceList[device.deviceName]
+                    // No fallback after delivered detach, replacement, cancellation or lost permission.
+                    val fallback=initialConfiguration!=null && !detached.get() && attached!=null &&
+                        attached.deviceId==device.deviceId && attached.vendorId==device.vendorId &&
+                        attached.productId==device.productId && usb.hasPermission(device) &&
+                        IphoneCarPlayConfiguration.find(attached)!=null
+                    status("CarPlay USB transition attempt=1 result=rejected fallback=$fallback")
+                    if(!fallback) throw result.error
+                    check(onReplacementAccepted(device)) { "USB unchanged configuration ownership revoked" }
+                    active()
+                    check(!detached.get()) { "USB unchanged configuration detached during admission" }
+                    configurationAction(initialConfiguration,1)
+                    false
+                }
+                is IphoneUsbHost.TransitionResult.ReenumerationRequested -> {
+                    status("CarPlay USB transition attempt=1 result=accepted fallback=false")
+                    true
+                }
                 else -> error("USB transition unavailable")
             }
-            status("CarPlay USB stage=reenumeration result=pending")
-            while(true) {
+            if(reenumerating) status("CarPlay USB stage=reenumeration result=pending")
+            while(reenumerating) {
                 active(); val elapsed=SystemClock.elapsedRealtime()-started
                 if(elapsed>=UsbCarPlayPermission.REENUMERATION_TIMEOUT_MS) throw TimeoutException("Selected USB reenumeration expired")
                 val candidates=usb.deviceList.values.filter { isCandidate(it) && it.deviceName!=device.deviceName &&
@@ -195,7 +243,7 @@ class OalUsbCarPlayRuntime(
                     check(fresh.size==1 && fresh.single().deviceName==candidate.deviceName &&
                         fresh.single().deviceId==candidate.deviceId) { "USB replacement changed during permission" }
                     check(UsbCarPlayPolicy.acceptReplacement(serial,candidate.serialNumber.orEmpty(),detached.get(),acceptedElapsed))
-                    check(IphoneCarPlayConfiguration.find(candidate)!=null) { "USB replacement lacks CarPlay configuration" }
+                    check(configurationAction(IphoneCarPlayConfiguration.find(candidate),1)!="reject-missing-configuration") { "USB replacement lacks CarPlay configuration" }
                     check(onReplacementAccepted(candidate)) { "USB replacement ownership revoked" }
                     selected=candidate;topology=topology(candidate);break
                 }
@@ -203,7 +251,21 @@ class OalUsbCarPlayRuntime(
             }
         }
         active()
+        val configuration=IphoneCarPlayConfiguration.find(selected) ?: error("USB CarPlay configuration missing")
+        val function=NcmFunctionDiscovery.find(configuration) ?: error("USB NCM function missing")
+        val usbMux=checkNotNull(IphoneCarPlayConfiguration.usbMuxInterface(configuration))
+        // Chosen descriptor receipt, not a claim of continuous active device/driver state.
+        status("CarPlay USB selection configurationId=${configuration.id} usbmuxInterfaceId=${usbMux.id} usbmuxAlt=${usbMux.alternateSetting} ncmControlInterfaceId=${function.control.id} ncmControlAlt=${function.control.alternateSetting} ncmDataInterfaceId=${function.data.id} ncmDataAlt=${function.data.alternateSetting}")
         val pipe=own {
+            // Owner callbacks may race a delivered detach. Recheck the exact census and real
+            // permission at the open boundary; the host independently checks permission again.
+            val attached=usb.deviceList[selected.deviceName]
+            check(attached!=null && attached.deviceId==selected.deviceId &&
+                attached.vendorId==selected.vendorId && attached.productId==selected.productId) {
+                "Selected USB detached before open"
+            }
+            check(usb.hasPermission(selected)) { "Selected USB permission revoked before open" }
+            active()
             var opened:IphoneUsbHost.Iap2SessionResult?=null
             host.openIap2UsbSessionAsync(selected,Executor { it.run() }) { opened=it }
             when(val result=opened) {
@@ -212,11 +274,9 @@ class OalUsbCarPlayRuntime(
                 else -> error("USBMUX unavailable")
             }
         }
-        val configuration=IphoneCarPlayConfiguration.find(selected) ?: error("USB CarPlay configuration missing")
-        val function=NcmFunctionDiscovery.find(configuration) ?: error("USB NCM function missing")
         val ncm=own {
             val ncmConnection=usb.openDevice(selected) ?: error("USB NCM unavailable")
-            NcmUsbBridge.open(ncmConnection,function)
+            NcmUsbBridge.open(ncmConnection,function,onDiagnostic={ status(it) })
         }
         val mux=own { Iap2UsbMuxHost.open(pipe) }
         status("CarPlay USB stage=usbmux result=ready")
@@ -306,6 +366,7 @@ class OalUsbCarPlayRuntime(
                 }, receipt)
             } },wired=true,onStatus=::status) }
         active();onDisplayQualified(projection.displayConfiguration)
+        projection.setNetworkStartupDiagnosticStop(ncm::stopStartupDiagnostics)
         val scale=com.openautolink.carplaylab.media.CarPlayDisplayPolicy.scaleDiagnostic(projection.displayConfiguration)
         com.openautolink.app.diagnostics.DiagnosticLog.i("carplay-scale",scale)
         projection.setRuntimeIdentification(identification)
@@ -325,6 +386,7 @@ class OalUsbCarPlayRuntime(
         com.openautolink.carplaylab.metadata.CarPlayMetadataIdentification.bootstrapSubscriptions(Iap2ControlMessages.subscriptions())
             .forEach { active();csm.send(it,5000) }
         val readyDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(120)
+        var endpointReceipts=0
         while(!canceled.get() && !csm.isClosed) {
             active()
             // Handoff is exact; this worker never receives CSM again after ownership transfer.
@@ -339,13 +401,22 @@ class OalUsbCarPlayRuntime(
             val frame=csm.recv(500) ?: continue
             if(vehicleBootstrap.handle(frame)) continue
             if(frame.messageId==0x4300) {
-                csm.send(Iap2CarPlayMessages.startSession(wiredIpv6Addresses=listOf(address),airPlayPort=projection.port,
+                val requestMonoNanos=System.nanoTime()
+                // Already on the USB owner worker. Await this exact frame, not earlier queued work.
+                csm.sendAndAwaitWritten(Iap2CarPlayMessages.startSession(wiredIpv6Addresses=listOf(address),airPlayPort=projection.port,
                     deviceIdentifier=identity,publicKey=projection.publicKeyHex,sourceVersion="950.7.1"),5000)
-                status("CarPlay USB stage=endpoint result=sent")
+                val writtenReceiptMonoNanos=System.nanoTime()
+                active()
+                if(endpointReceipts<4) {
+                    endpointReceipts++
+                    status("CarPlay USB stage=endpoint result=written requestMonoNs=$requestMonoNanos " +
+                        "writtenReceiptMonoNs=$writtenReceiptMonoNanos writeAwaitElapsedUs=${(writtenReceiptMonoNanos-requestMonoNanos)/1_000}")
+                }
             }
         }
     }
     private fun requirePermission(result: UsbCarPlayPermission.Result) {
+        permissionAwaitDenied = result == UsbCarPlayPermission.Result.DENIED
         status("CarPlay USB stage=usb-permission result=${result.name.lowercase()}")
         when(result) {
             UsbCarPlayPermission.Result.GRANTED -> Unit

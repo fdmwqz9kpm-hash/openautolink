@@ -1,22 +1,44 @@
 package com.openautolink.app.ui.components
 
+import android.content.Context
+import android.content.SharedPreferences
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.AbsoluteAlignment
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
-import com.openautolink.app.ui.projection.ProjectionUiState
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
+import com.openautolink.app.R
 import com.openautolink.app.ui.projection.LogUploadState
+import com.openautolink.app.ui.projection.ProjectionUiState
 
-/** Shared AA/CarPlay appearance, preferences and persisted drag keys.
- * Null actions omit backend-unsupported controls. Settings is unconditional.
- */
+internal data class OverlayControl(
+    val label: String,
+    val icon: ImageVector,
+    val action: () -> Unit,
+    val status: String? = null,
+    val tint: Color = Color.Unspecified,
+)
+
+private const val MENU_DRAG_HINT = "Hold and drag me where you want me"
+private const val MENU_DRAG_HINT_DISMISSED = "menu_drag_hint_dismissed"
+
+/** Shared AA/CarPlay menu. Only the logo floats; Settings is always available. */
 @Composable
 fun ProjectionOverlayControls(
     uiState: ProjectionUiState,
@@ -29,173 +51,219 @@ fun ProjectionOverlayControls(
     onFileLogging: (() -> Unit)? = null,
     onUpload: (() -> Unit)? = null,
     onSimulateIgnition: (() -> Unit)? = null,
-) {
-        var viewport by remember { mutableStateOf<OverlayButtonViewport?>(null) }
-        // Measure the entire already chrome-free AA/CarPlay parent, not the
-        // bottom-end control column or the possibly letterboxed video Surface.
-        // A plain Box has no background pointer handler: maps retain blank-space touches.
-        Box(
-            modifier = modifier.fillMaxSize().onGloballyPositioned { coordinates ->
-                val origin = coordinates.positionInRoot()
-                viewport = OverlayButtonViewport(origin.x, origin.y,
-                    coordinates.size.width.toFloat(), coordinates.size.height.toFloat())
+) = com.openautolink.app.ui.theme.OalUiScale {
+    val colors = MaterialTheme.colorScheme
+    // Old show-floating-button preferences do not hide actions in this menu.
+    // Callback/capability availability and the actual diagnostic enable flags do.
+    val controls = buildList {
+        add(OverlayControl("Settings", Icons.Default.Settings, onSettings))
+        if (onSwitchPhone != null) {
+            add(OverlayControl("Switch Phone", Icons.Default.PhoneAndroid, onSwitchPhone,
+                if (carHotspotSwitching) "Switching phone" else null,
+                if (carHotspotSwitching) colors.tertiary else Color.Unspecified))
+        }
+        add(OverlayControl("Stats for nerds", Icons.Default.Info, onStats,
+            if (uiState.showStats) "Visible" else null,
+            if (uiState.showStats) colors.primary else Color.Unspecified))
+        if (onReconnect != null) {
+            add(OverlayControl("Reconnect", Icons.Default.Refresh, onReconnect))
+        }
+        if (onFileLogging != null && uiState.fileLoggingEnabled) {
+            add(OverlayControl("File Logging", Icons.Default.FiberManualRecord, onFileLogging,
+                if (uiState.fileLoggingActive) "Recording" else "Stopped",
+                if (uiState.fileLoggingActive) colors.error else Color.Unspecified))
+        }
+        if (onUpload != null && uiState.uploadEnabled) {
+            add(OverlayControl("Upload Logs",
+                when (uiState.uploadState) {
+                    LogUploadState.SUCCESS -> Icons.Default.CloudDone
+                    LogUploadState.ERROR -> Icons.Default.CloudOff
+                    else -> Icons.Default.CloudUpload
+                }, onUpload,
+                when (uiState.uploadState) {
+                    LogUploadState.UPLOADING -> "Uploading"
+                    LogUploadState.SUCCESS -> "Uploaded"
+                    LogUploadState.ERROR -> "Upload failed"
+                    LogUploadState.IDLE -> null
+                },
+                when (uiState.uploadState) {
+                    LogUploadState.UPLOADING -> colors.tertiary
+                    LogUploadState.SUCCESS -> Color(0xFF2E7D32)
+                    LogUploadState.ERROR -> colors.error
+                    LogUploadState.IDLE -> Color.Unspecified
+                }))
+        }
+        if (onSimulateIgnition != null && uiState.simulateIgnitionButton) {
+            add(OverlayControl("Simulate ignition cycle", Icons.Default.PowerSettingsNew, onSimulateIgnition))
+        }
+    }
+    val context = LocalContext.current
+    val prefs = remember(context) { context.getSharedPreferences("overlay_positions", Context.MODE_PRIVATE) }
+    // Teaching is not a placement: launcher/menu resets must not teach again.
+    val onboarding = remember(context) { context.getSharedPreferences("overlay_onboarding", Context.MODE_PRIVATE) }
+    var hintDismissed by remember(onboarding) {
+        mutableStateOf(onboarding.getBoolean(MENU_DRAG_HINT_DISMISSED, false))
+    }
+    DisposableEffect(onboarding) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { preferences, key ->
+            if (key == null || key == MENU_DRAG_HINT_DISMISSED) {
+                hintDismissed = preferences.getBoolean(MENU_DRAG_HINT_DISMISSED, false)
+            }
+        }
+        onboarding.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { onboarding.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    val acknowledgeHint: () -> Unit = {
+        // Only real completed movement or an explicit acknowledgement writes this.
+        if (!hintDismissed) {
+            hintDismissed = true
+            onboarding.edit().putBoolean(MENU_DRAG_HINT_DISMISSED, true).apply()
+        }
+    }
+    var menuOpen by remember { mutableStateOf(false) }
+    val physicalDensity = LocalView.current.resources.displayMetrics.density
+    OverlaySafeArea(modifier) {
+        val origin = LocalOverlaySafeAreaOrigin.current
+        BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = AbsoluteAlignment.TopLeft) {
+            val width = constraints.maxWidth.toFloat()
+            val height = constraints.maxHeight.toFloat()
+            val buttonSize = with(LocalDensity.current) { 56.dp.toPx() }
+            val geometry = OverlayButtonGeometry(
+                parentWidth = width, parentHeight = height,
+                anchorX = (width - buttonSize).coerceAtLeast(0f) / 2f,
+                anchorY = (height - buttonSize).coerceAtLeast(0f) / 2f,
+                buttonWidth = buttonSize, buttonHeight = buttonSize,
+                density = physicalDensity, originX = origin.x, originY = origin.y,
+            )
+            DraggableOverlayButton(
+                painter = painterResource(R.drawable.ic_oal_glyph),
+                contentDescription = "OAL controls",
+                onClick = { menuOpen = true },
+                // A new control gets its own default, not an old Settings position.
+                positionKey = "overlay_menu", geometry = geometry,
+                modifier = Modifier.testTag("settingsButton"),
+                onDragCompleted = acknowledgeHint,
+                decoration = { topLeft ->
+                    if (!hintDismissed && !menuOpen) {
+                        OverlayDragHint(geometry, topLeft, acknowledgeHint)
+                    }
+                },
+            )
+        }
+    }
+    if (menuOpen) {
+        ProjectionOverlayRecoveryDialog(
+            actions = controls,
+            onAcknowledgeHint = if (hintDismissed) null else acknowledgeHint,
+            onDismiss = { menuOpen = false },
+            onRestore = {
+                OverlayButtonPositionStore.resetAll(prefs)
+                com.openautolink.app.diagnostics.DiagnosticLog.i("overlay", "Overlay positions restored from OAL menu")
             },
-        ) {
-            Column(Modifier.align(androidx.compose.ui.Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp)) {
-                // Settings button — draggable
-                DraggableOverlayButton(
-                    icon = Icons.Default.Settings,
-                    contentDescription = "Settings",
-                    onClick = onSettings,
-                    positionKey = "overlay_settings",
-                    modifier = Modifier.testTag("settingsButton"),
-                    viewport = viewport,
-                )
+        )
+    }
+}
 
-                // Switch Phone button — Car Hotspot mode only. Tapping opens a
-                // centered chooser overlay; the underlying AA session keeps
-                // streaming until the user explicitly picks a different phone.
-                if (onSwitchPhone != null && uiState.overlayPhoneSwitchButton) {
-                    Spacer(modifier = Modifier.height(8.dp))
+/** Bounded sibling, never a modal coach mark. Tiny windows keep teaching in the menu. */
+@Composable
+private fun OverlayDragHint(
+    geometry: OverlayButtonGeometry,
+    logoTopLeft: OverlayButtonPoint,
+    onDismiss: () -> Unit,
+) {
+    val density = LocalDensity.current
+    val gap = with(density) { 8.dp.toPx() }
+    val minWidth = with(density) { 160.dp.toPx() }
+    val minHeight = with(density) { 96.dp.toPx() }
+    val maxWidth = with(density) { 320.dp.toPx() }
+    val maxHeight = with(density) { 160.dp.toPx() }
+    val width = geometry.parentWidth
+    val height = geometry.parentHeight
+    val left = logoTopLeft.x
+    val top = logoTopLeft.y
+    val right = left + geometry.buttonWidth
+    val bottom = top + geometry.buttonHeight
+    // Prefer below/above, then a side. Every candidate excludes the logo + gap.
+    val area = listOf(
+        Rect(0f, bottom + gap, width, height),
+        Rect(0f, 0f, width, top - gap),
+        Rect(right + gap, 0f, width, height),
+        Rect(0f, 0f, left - gap, height),
+    ).firstOrNull { it.width >= minWidth && it.height >= minHeight } ?: return
+    val bubbleWidth = minOf(area.width, maxWidth)
+    val bubbleHeight = minOf(area.height, maxHeight)
+    val x = ((left + right - bubbleWidth) / 2f).coerceIn(area.left, area.right - bubbleWidth)
+    val y = ((top + bottom - bubbleHeight) / 2f).coerceIn(area.top, area.bottom - bubbleHeight)
+    Surface(
+        modifier = Modifier.absoluteOffset { IntOffset(x.roundToInt(), y.roundToInt()) }
+            .width(with(density) { bubbleWidth.toDp() })
+            .heightIn(max = with(density) { bubbleHeight.toDp() })
+            .testTag("overlayDragHint"),
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 6.dp,
+    ) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp)) {
+            Text(MENU_DRAG_HINT, style = MaterialTheme.typography.bodyMedium)
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)
+                .testTag("overlayDragHintDismiss")) { Text("Got it") }
+        }
+    }
+}
 
-                    DraggableOverlayButton(
-                        icon = Icons.Default.PhoneAndroid,
-                        contentDescription = "Switch Phone",
-                        onClick = { onSwitchPhone?.invoke() },
-                        positionKey = "overlay_switch_phone",
-                        containerColor = if (carHotspotSwitching) {
-                            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.7f)
-                        } else {
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
-                        },
-                        tint = if (carHotspotSwitching) {
-                            MaterialTheme.colorScheme.onTertiary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        modifier = Modifier.testTag("switchPhoneButton"),
-                        viewport = viewport,
-                    )
-                }
-
-                // Stats button — user-configurable, unlike Settings which always stays visible.
-                if (uiState.overlayStatsButton) {
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    DraggableOverlayButton(
-                        icon = Icons.Default.Info,
-                        contentDescription = "Stats for nerds",
-                        onClick = onStats,
-                        positionKey = "overlay_stats",
-                        containerColor = if (uiState.showStats) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-                        } else {
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
-                        },
-                        tint = if (uiState.showStats) {
-                            MaterialTheme.colorScheme.onPrimary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        modifier = Modifier.testTag("statsButton"),
-                        viewport = viewport,
-                    )
-                }
-
-                // Reconnect button — invokes the exact same callback as Settings'
-                // Save & Reconnect action, so preference reload and session behavior
-                // cannot drift between the two entry points.
-                if (onReconnect != null && uiState.overlayReconnectButton) {
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    DraggableOverlayButton(
-                        icon = Icons.Default.Refresh,
-                        contentDescription = "Reconnect",
-                        onClick = { onReconnect?.invoke() },
-                        positionKey = "overlay_reconnect",
-                        modifier = Modifier.testTag("reconnectButton"),
-                        viewport = viewport,
-                    )
-                }
-
-                // File logging button — only shown when enabled in Settings → Diagnostics
-                if (onFileLogging != null && uiState.fileLoggingEnabled) {
-                Spacer(modifier = Modifier.height(8.dp))
-
-                DraggableOverlayButton(
-                    icon = Icons.Default.FiberManualRecord,
-                    contentDescription = "File Logging",
-                    onClick = { onFileLogging?.invoke() },
-                    positionKey = "overlay_file_log",
-                    containerColor = if (uiState.fileLoggingActive) {
-                        Color.Red.copy(alpha = 0.7f)
-                    } else {
-                        MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
-                    },
-                    tint = if (uiState.fileLoggingActive) {
-                        Color.White
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                    modifier = Modifier.testTag("fileLogButton"),
-                    viewport = viewport,
-                )
-                } // end fileLoggingEnabled
-
-                // Upload Logs button — maintainer-only, shown when the feature
-                // is enabled in Settings. Color states: amber (uploading),
-                // green (success), red (error), default surface (idle). Appears
-                // whenever uploadEnabled so the user can fire it right after a
-                // drive while the just-written logs are still in the 6h window.
-                if (onUpload != null && uiState.uploadEnabled) {
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    val uploadContainer = when (uiState.uploadState) {
-                        LogUploadState.UPLOADING -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.85f)
-                        LogUploadState.SUCCESS -> Color(0xFF2E7D32).copy(alpha = 0.85f)
-                        LogUploadState.ERROR -> Color.Red.copy(alpha = 0.8f)
-                        LogUploadState.IDLE -> MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
+/** All dialog chrome scrolls too, so actions remain reachable in short windows. */
+@Composable
+internal fun ProjectionOverlayRecoveryDialog(
+    actions: List<OverlayControl>,
+    onRestore: () -> Unit,
+    onDismiss: () -> Unit,
+    maxHeight: androidx.compose.ui.unit.Dp = androidx.compose.ui.unit.Dp.Unspecified,
+    onAcknowledgeHint: (() -> Unit)? = null,
+) = com.openautolink.app.ui.theme.OalUiScale {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        com.openautolink.app.ui.theme.OalUiScale {
+            Surface(
+                modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth().heightIn(max = maxHeight),
+                shape = MaterialTheme.shapes.extraLarge,
+                tonalElevation = 6.dp,
+            ) {
+                Column(Modifier.fillMaxWidth().testTag("overlayRecoveryScroll")
+                    .verticalScroll(rememberScrollState()).padding(24.dp)) {
+                    Text("OAL controls", style = MaterialTheme.typography.headlineSmall)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Tap an action. Long-press and drag the OAL logo to move it.")
+                    if (onAcknowledgeHint != null) {
+                        Text(MENU_DRAG_HINT)
+                        TextButton(onClick = onAcknowledgeHint,
+                            modifier = Modifier.heightIn(min = 48.dp).testTag("overlayMenuHintDismiss")) {
+                            Text("Got it")
+                        }
                     }
-                    val uploadTint = if (uiState.uploadState == LogUploadState.IDLE) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        Color.White
+                    actions.forEach { control ->
+                        val tint = if (control.tint == Color.Unspecified) MaterialTheme.colorScheme.onSurface else control.tint
+                        TextButton(
+                            onClick = { onDismiss(); control.action() },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                .testTag("overlayRecoveryAction:${control.label}"),
+                            colors = ButtonDefaults.textButtonColors(contentColor = tint),
+                        ) {
+                            Icon(control.icon, contentDescription = null, modifier = Modifier.size(24.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
+                                Text(control.label)
+                                control.status?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
+                            }
+                        }
                     }
-                    val uploadIcon = when (uiState.uploadState) {
-                        LogUploadState.SUCCESS -> Icons.Default.CloudDone
-                        LogUploadState.ERROR -> Icons.Default.CloudOff
-                        else -> Icons.Default.CloudUpload
-                    }
-                    DraggableOverlayButton(
-                        icon = uploadIcon,
-                        contentDescription = "Upload Logs",
-                        onClick = { onUpload?.invoke() },
-                        positionKey = "overlay_upload_logs",
-                        containerColor = uploadContainer,
-                        tint = uploadTint,
-                        modifier = Modifier.testTag("uploadLogsButton"),
-                        viewport = viewport,
-                    )
-                }
-
-                // Simulate ignition cycle — maintainer tool, off by default.
-                // Runs the shutdown -> Bluetooth loss -> republish -> reconnect
-                // sequence without turning the car off, so the path where the
-                // reconnect failures actually happen can be tested in the
-                // driveway instead of once per drive.
-                if (onSimulateIgnition != null && uiState.simulateIgnitionButton) {
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    DraggableOverlayButton(
-                        icon = Icons.Default.PowerSettingsNew,
-                        contentDescription = "Simulate ignition cycle",
-                        onClick = { onSimulateIgnition?.invoke() },
-                        positionKey = "overlay_simulate_ignition",
-                        modifier = Modifier.testTag("simulateIgnitionButton"),
-                        viewport = viewport,
-                    )
+                    TextButton(
+                        onClick = { onRestore(); onDismiss() },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("overlayRecoveryAction:Restore button positions"),
+                    ) { Text("Restore button positions") }
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("overlayRecoveryAction:Close"),
+                    ) { Text("Close") }
                 }
             }
         }
-
+    }
 }

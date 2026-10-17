@@ -9,12 +9,18 @@ internal data class UsbCarPlayTopology(val name: String, val id: Int, val vendor
 
 /** Shared by runtime instances, not manager instances. Absence revokes an exact fence; no timer retry. */
 internal class UsbCarPlayRetryFence {
-    private val failures = mutableMapOf<UsbCarPlayTopology, String>()
-    @Synchronized fun blocked(target: UsbCarPlayTopology, attached: Set<UsbCarPlayTopology>): String? {
+    private data class Failure(val reason: String, val permissionAwaitDenied: Boolean)
+    private val failures = mutableMapOf<UsbCarPlayTopology, Failure>()
+    @Synchronized fun blocked(target: UsbCarPlayTopology, attached: Set<UsbCarPlayTopology>,
+        explicitPermissionRetry: Boolean = false): String? {
         failures.keys.retainAll(attached)
-        return failures[target]
+        val failure = failures[target] ?: return null
+        // Admit only this attempt; retain the fence for every automatic rebuild/rescan.
+        return failure.reason.takeUnless { explicitPermissionRetry && failure.permissionAwaitDenied }
     }
-    @Synchronized fun failed(target: UsbCarPlayTopology, reason: String) { failures[target] = reason }
+    @Synchronized fun failed(target: UsbCarPlayTopology, reason: String, permissionAwaitDenied: Boolean = false) {
+        failures[target] = Failure(reason, permissionAwaitDenied && reason == "PERMISSION")
+    }
 }
 
 internal object UsbCarPlayFailurePolicy {

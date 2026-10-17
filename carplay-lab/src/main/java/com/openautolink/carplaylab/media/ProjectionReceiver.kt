@@ -67,6 +67,20 @@ class ProjectionReceiver(
     private val retirementRetryRequested = AtomicBoolean()
     private val retirementLock = Any()
     private val lock = Any()
+    @Volatile private var hostUiHandler: (((() -> Boolean)) -> Unit)? = null
+    /** Install before start. The host must recheck the exact receipt on its UI worker. */
+    fun setHostUiHandler(handler: (isCurrent: () -> Boolean) -> Unit) = synchronized(lock) {
+        check(!closed.get() && !admissionRevoked.get() && server == null)
+        hostUiHandler = handler
+    }
+    private fun canRequestHostUi(session: AirPlaySession): Boolean =
+        !closed.get() && !admissionRevoked.get() && active === session &&
+            session in sessions && session.controlAuthenticated && !session.isClosed
+    private var networkStartupDiagnosticStop: (() -> Unit)? = null
+    /** Install before start. Numeric startup diagnostics only; no session/transport mutation. */
+    fun setNetworkStartupDiagnosticStop(stop: () -> Unit) = synchronized(lock) {
+        networkStartupDiagnosticStop = stop
+    }
     private var server: ServerSocket? = null
     private var acceptThread: Thread? = null
     private var policy: MediaPolicy? = null
@@ -116,6 +130,13 @@ class ProjectionReceiver(
     /** Presentation receipts do not take the session/control lifecycle lock or retire transport. */
     fun attachSurface(surface: Surface) { if (!closed.get() && !admissionRevoked.get()) sink.attachSurface(surface) }
     fun detachSurface(surface: Surface) { sink.detachSurface(surface) }
+    private val oemIcons = listOf(AirPlayIcon(192, 192,
+        checkNotNull(ProjectionReceiver::class.java.getResourceAsStream("/oal_carplay_home.png")) {
+            "Packaged OAL return icon missing"
+        }.use { it.readBytes() }))
+    private fun sessionConfig(): AirPlayConfig =
+        benchReceiverConfig(btMac, port, microphoneCapability, displayConfiguration).copy(
+            hevc = videoSelection.hevcOffered, oemLabel = "OpenAutoLink", icons = oemIcons)
     private val engine = CarPlayMediaEngine(sink, microphoneEnabled = microphoneCapability.available,
         onDiagnostic = { session, message ->
             if (!closed.get() && !admissionRevoked.get() && session in sessions) status(message)
@@ -146,6 +167,11 @@ class ProjectionReceiver(
         }
         override fun onVideoFrameRendered(session: AirPlaySession) {
             if (!closed.get() && session in sessions) { active = session; status("media stage=video-first-frame-confirmed count=1") }
+        }
+        override fun onHostUiRequested(session: AirPlaySession) {
+            if (!canRequestHostUi(session)) return
+            // UI work is owned by the host; no Activity or task effects on this socket worker.
+            runCatching { hostUiHandler?.invoke { canRequestHostUi(session) } }
         }
         override fun onCommand(session: AirPlaySession, type: String, params: Map<String, Any?>) {
             if (closed.get() || active !== session || session !in sessions) return
@@ -241,15 +267,33 @@ class ProjectionReceiver(
         try {
             while (!closed.get()) {
                 val socket = bound.accept()
-                synchronized(lock) {
+                // Capture the actual accept boundary, not the later asynchronous status delivery.
+                val acceptedMonoNanos = System.nanoTime()
+                var diagnosticStop: (() -> Unit)? = null
+                val accepted = synchronized(lock) {
                     if (closed.get() || admissionRevoked.get() || network == null && policy?.allows(socket.inetAddress) != true ||
                         sessions.size >= (if (network == null) 2 else 1) || admittedCount >= 32) {
                         socket.close(); status("media stage=admission-declined")
+                        false
                     } else {
                         admittedCount++
+                        diagnosticStop = networkStartupDiagnosticStop
+                        true
+                    }
+                }
+                if (!accepted) continue
+                // The accepted-owner diagnostic boundary precedes all fallible session setup.
+                // No observer runs under the receiver lock; callback failure cannot undo admission.
+                runCatching { diagnosticStop?.invoke() }
+                synchronized(lock) {
+                    // A reentrant observer may retire this receiver while the lock is released.
+                    if (closed.get() || admissionRevoked.get()) {
+                        socket.close()
+                        return@synchronized
+                    }
+                    run {
                         socket.tcpNoDelay = true; socket.keepAlive = true
-                        val config = benchReceiverConfig(btMac, port, microphoneCapability, displayConfiguration)
-                            .copy(hevc = videoSelection.hevcOffered)
+                        val config = sessionConfig()
                         telemetry.advertised(displayConfiguration.width, displayConfiguration.height)
                         status("BENCH_DIAG microphoneCapability=${microphoneCapability.available}")
                         val admission = peerAdmission
@@ -270,7 +314,7 @@ class ProjectionReceiver(
                             return@synchronized
                         }
                         sessions.add(session); allSessions.add(session)
-                        status("CarPlay network stage=control-accepted authentication=pending")
+                        status("CarPlay network stage=control-accepted authentication=pending acceptedMonoNs=$acceptedMonoNanos")
                         // Engine attachment receives this exact session, never the latest accepted one.
                         session.start()
                         deadlines.schedule({ if (!session.controlAuthenticated) session.close() }, 30, TimeUnit.SECONDS)

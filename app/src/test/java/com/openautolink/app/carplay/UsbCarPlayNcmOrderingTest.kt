@@ -14,12 +14,13 @@ class UsbCarPlayNcmOrderingTest {
         val mux = source.indexOf("val mux=own { Iap2UsbMuxHost.open(pipe) }")
         assertTrue("USBMUX pipe must be opened before the mux host", pipe >= 0 && mux > pipe)
         val beforeMux = source.substring(pipe, mux)
+        // Descriptor discovery/receipt may precede opening; physical NCM still follows USBMUX.
+        assertTrue(source.indexOf("val configuration=IphoneCarPlayConfiguration.find(selected)") in 0 until pipe)
+        assertTrue(source.indexOf("val function=NcmFunctionDiscovery.find(configuration)") in 0 until pipe)
         val expected = """
-            val configuration=IphoneCarPlayConfiguration.find(selected) ?: error("USB CarPlay configuration missing")
-            val function=NcmFunctionDiscovery.find(configuration) ?: error("USB NCM function missing")
             val ncm=own {
                 val ncmConnection=usb.openDevice(selected) ?: error("USB NCM unavailable")
-                NcmUsbBridge.open(ncmConnection,function)
+                NcmUsbBridge.open(ncmConnection,function,onDiagnostic={ status(it) })
             }
         """.trimIndent()
         assertTrue("NCM discovery/open/ownership must immediately precede Iap2UsbMuxHost.open (DiPlay openNcm before runStack)",
@@ -51,5 +52,12 @@ class UsbCarPlayNcmOrderingTest {
         assertTrue(close.contains("try { owner.close() }"))
         assertTrue(close.contains("is Iap2UsbMuxHost -> check(owner.awaitClosed(5000))"))
         assertTrue(close.contains("resources.removeAll { it === owner }"))
+    }
+
+    @Test fun diagnosticStopIsWiredToTheExactNcmOwnerBeforeReceiverStarts() {
+        val source=runtime()
+        val stop=source.indexOf("projection.setNetworkStartupDiagnosticStop(ncm::stopStartupDiagnostics)")
+        assertTrue(stop>source.indexOf("val projection=ownReceiver"))
+        assertTrue(stop<source.indexOf("projection.start(CarPlayNetworkSelection"))
     }
 }

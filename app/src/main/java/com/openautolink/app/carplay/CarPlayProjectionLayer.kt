@@ -126,6 +126,12 @@ fun CarPlayProjectionLayer(
                 true
             }.testTag("carPlayTouch"))
         }
+        if (controls.showStats) {
+            StatsForNerdsOverlay(modifier = Modifier.align(Alignment.BottomStart).padding(12.dp)) {
+                CarPlayStatsPresentation.rows(state).forEach { (label, value) -> StatLine(label, value) }
+            }
+        }
+
         ProjectionOverlayControls(
             uiState = controls,
             onSettings = onSettings,
@@ -135,10 +141,5 @@ fun CarPlayProjectionLayer(
             onFileLogging = viewModel::toggleFileLogging,
             onUpload = viewModel::uploadLogsNow,
         )
-        if (controls.showStats) {
-            StatsForNerdsOverlay(modifier = Modifier.align(Alignment.BottomStart).padding(12.dp)) {
-                CarPlayStatsPresentation.rows(state).forEach { (label, value) -> StatLine(label, value) }
-            }
-        }
     }
 }
