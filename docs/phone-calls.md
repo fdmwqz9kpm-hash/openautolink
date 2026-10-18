@@ -2,7 +2,7 @@
 
 ## USB CarPlay: leave the iPhone unpaired from vehicle Bluetooth
 
-Music and calls work over the USB CarPlay connection without pairing the iPhone to the car. The maintainer confirmed both outgoing and incoming calls on the 2024 Chevrolet Blazer EV with vehicle Bluetooth disconnected.
+USB CarPlay carries call audio independently of vehicle Bluetooth. Music playback and call operation were reported on the maintainer's 2024 Chevrolet Blazer EV without Bluetooth, but subsequent incoming-call tests exposed silent microphone input. **Reliable two-way CarPlay call audio is not yet verified.** Do not rely on a completed call, audible caller, or working Siri as proof the caller can hear the car microphone.
 
 **Do not pair the iPhone to the vehicle's Bluetooth for USB CarPlay.** If already paired, forget/remove that pairing so it does not reconnect. GM's native Bluetooth playback control competes with CarPlay when the iPhone is also Bluetooth-connected, causing media to constantly pause after pressing Play. Leave the car's Bluetooth adapter available for other phones; only the iPhone's vehicle pairing needs to be removed.
 

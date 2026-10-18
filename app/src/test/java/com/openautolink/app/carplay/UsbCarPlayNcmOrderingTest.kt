@@ -36,11 +36,18 @@ class UsbCarPlayNcmOrderingTest {
         val auth = source.indexOf("val auth=LocalMfiAuthenticationClient.load")
         val vpn = source.indexOf("val vpn=bindVpn()")
         val tun = source.indexOf("fd=vpn.attach(token,address)")
-        val bridge = source.indexOf("val bridge=own { Ipv6NcmBridge(ncm,fd,mac)")
+        val bridge = source.indexOf("val bridge=own { Ipv6NcmBridge(ncm,fd,mac,")
         assertTrue(carkit >= 0 && auth > carkit && vpn > auth && tun > vpn && bridge > tun)
         assertTrue(source.indexOf("active();bridge.start()") > bridge)
         assertTrue(source.substringAfter("val identification=Iap2IdentificationConfig").substringBefore("val projection=")
             .contains("function.data.id"))
+    }
+
+    @Test fun bridgeDiagnosticContextUsesTheExactAddressConfiguredOnTun() {
+        val source=runtime()
+        assertTrue(source.contains("fd=vpn.attach(token,address)"))
+        assertTrue("bridge context must use exact configured address, not another MAC-derived address",
+            source.contains("Ipv6NcmBridge(ncm,fd,mac,hostIpv6=InetAddress.getByName(address).address)"))
     }
 
     @Test fun resourceRetirementRemainsReverseAcquisitionOrder() {

@@ -9,7 +9,11 @@ import com.shilapi.xcertplay.transport.UsbNetworkStartupDiagnostics.Direction
 import com.shilapi.xcertplay.transport.UsbNetworkStartupDiagnostics.Decision
 
 class Ipv6NcmBridge(private val ncm: NcmUsbBridge, private val tun: ParcelFileDescriptor,
-    private val hostMac: ByteArray, private val onError: () -> Unit) : AutoCloseable {
+    private val hostMac: ByteArray, hostIpv6: ByteArray? = null, private val onError: () -> Unit) : AutoCloseable {
+ constructor(ncm: NcmUsbBridge, tun: ParcelFileDescriptor, hostMac: ByteArray, onError: () -> Unit) :
+  this(ncm,tun,hostMac,null,onError)
+ // Diagnostic comparison only; never changes forwarding, peer learning, or ND policy.
+ private val diagnosticHostIpv6=hostIpv6?.takeIf { it.size==16 }?.copyOf()
  private val running=AtomicBoolean(false)
  @Volatile private var peerMac: ByteArray?=null
  private val threads=mutableListOf<Thread>()
@@ -42,7 +46,10 @@ class Ipv6NcmBridge(private val ncm: NcmUsbBridge, private val tun: ParcelFileDe
   }
   peerMac=view.sourceMac
   ncm.startupDiagnostics.packet(Direction.IN,packet,true,Decision.FORWARD)
-  output.write(packet)
+  val neighbor=ncm.startupDiagnostics.beginNeighbor(packet,diagnosticHostIpv6)
+  var written=false
+  try { output.write(packet); written=true }
+  finally { ncm.startupDiagnostics.completeNeighbor(neighbor,written) }
  }
  internal fun forwardOutbound(packet:ByteArray) {
   if(!linkLocal(packet)) {

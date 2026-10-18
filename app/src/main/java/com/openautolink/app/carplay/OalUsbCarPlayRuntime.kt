@@ -324,7 +324,7 @@ class OalUsbCarPlayRuntime(
             fd=vpn.attach(token,address)
             AutoCloseable { vpn.detach(token) }
         }
-        val bridge=own { Ipv6NcmBridge(ncm,fd,mac) { cancel() } }
+        val bridge=own { Ipv6NcmBridge(ncm,fd,mac,hostIpv6=InetAddress.getByName(address).address) { cancel() } }
         synchronized(resourcesLock) { active();bridge.start() }
         val nicDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5)
         var nic:NetworkInterface?=null

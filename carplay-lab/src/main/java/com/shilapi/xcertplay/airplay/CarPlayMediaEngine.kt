@@ -95,10 +95,20 @@ class CarPlayMediaEngine(
         val format = com.shilapi.xcertplay.media.AudioOutputSupport.withSamplesPerFrame(negotiated, stream["spf"]) ?: return null
         if (!sink.supportsAudio(format)) return null
         val key = outputKey(session, stream) ?: return null
-        val microphone = microphoneConfig(session,type,stream,format)
+        // Calls/Siri retain their port-driven input contract. Default app audio may be output-only.
+        // DiPlay 6d3b8a8ce927cb4b115b8c3881f17619433e93b1: explicit input overrides the port.
+        val inputAllowed = when (audioType) {
+            "default", "compatibility" -> when (val input = stream["input"]) {
+                is Boolean -> input
+                is Number -> input.toInt() != 0
+                else -> true // Absent/malformed flag retains the existing validated-port fallback.
+            }
+            else -> true
+        }
         // A requested main input must not be silently acknowledged as an output-only stream.
-        val inputRequested = type == 100 && stream.containsKey("dataPort") &&
+        val inputRequested = inputAllowed && type == 100 && stream.containsKey("dataPort") &&
             com.shilapi.xcertplay.media.MicrophoneSupport.source(audioType) != null
+        val microphone = if (inputRequested) microphoneConfig(session,type,stream,format) else null
         if (inputRequested && microphone == null) return null
         if (!claim(session)) { microphone?.key?.fill(0); return null }
         val id = Key(session, type, audioType)

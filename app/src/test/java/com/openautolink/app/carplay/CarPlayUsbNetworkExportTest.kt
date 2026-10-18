@@ -40,8 +40,17 @@ class CarPlayUsbNetworkExportTest {
                 this[8]=0xfe.toByte();this[9]=0x80.toByte();this[24]=0xfe.toByte();this[25]=0x80.toByte()
             }
             bridge.javaClass.declaredMethods.single {it.name.startsWith("forwardOutbound")}.invoke(bridge,nd)
-            bridge.javaClass.declaredMethods.single {it.name.startsWith("forwardInbound")}.invoke(bridge,
-                EthernetIpv6Codec.build(ByteArray(6),ByteArray(6),nd),ByteArrayOutputStream())
+            val inbound=bridge.javaClass.declaredMethods.single {it.name.startsWith("forwardInbound")}
+            inbound.invoke(bridge,EthernetIpv6Codec.build(ByteArray(6),ByteArray(6),nd),ByteArrayOutputStream())
+            val writeFailure=java.io.IOException("private-write-exception-must-not-export")
+            try {
+                inbound.invoke(bridge,EthernetIpv6Codec.build(ByteArray(6),ByteArray(6),nd),object:java.io.OutputStream() {
+                    override fun write(value:Int)=throw writeFailure
+                })
+                fail("TUN write must still fail")
+            } catch (failure:java.lang.reflect.InvocationTargetException) {assertSame(writeFailure,failure.cause)}
+            val privateSuffix="USB network stage=nd-receipt receipt=3 icmp=ns shape=complete source=specified target=unknown hopLimit=invalid checksum=invalid tunWrite=written address=fe80::1"
+            reporter.record(privateSuffix)
             val p=ByteArray(60).apply {this[0]=0x60;this[5]=20;this[6]=6;this[52]=0x50;this[53]=0x12}
             repeat(7) {ncm.send(EthernetIpv6Codec.build(ByteArray(6),ByteArray(6),p),2000)}
             val contents=log.readText()
@@ -50,6 +59,10 @@ class CarPlayUsbNetworkExportTest {
             assertTrue(contents.contains("attempt=7 packetBytes=60 next=tcp icmp=unknown flags=18 result=full"))
             assertTrue(contents.contains("next=icmpv6 icmp=ns flags=unknown peerMacKnown=false decision=mac-unknown-drop"))
             assertTrue(contents.contains("next=icmpv6 icmp=ns flags=unknown peerMacKnown=true decision=forward"))
+            assertTrue("actual TUN receipt must survive reporter and uploader",contents.contains("USB network stage=nd-receipt receipt=1 icmp=ns shape=complete source=specified target=unknown hopLimit=invalid checksum=invalid tunWrite=written"))
+            assertTrue("failed actual TUN write must also survive export",contents.contains("USB network stage=nd-receipt receipt=2 icmp=ns shape=complete source=specified target=unknown hopLimit=invalid checksum=invalid tunWrite=failed"))
+            assertEquals(2,contents.lineSequence().count {it.contains("stage=nd-receipt ")})
+            assertFalse(contents.contains("address="));assertFalse(contents.contains("private-write-exception"))
             val context=mockk<Context>(); every {context.getExternalFilesDirs(null)} returns arrayOf(base)
             every {context.cacheDir} returns cache
             mockkObject(OalLog); every {OalLog.i(any(),any())} returns Unit
@@ -71,6 +84,29 @@ class CarPlayUsbNetworkExportTest {
             assertEquals(contents,members[log.name])
             assertFalse(members.values.any {it.contains("synthetic-test-token")})
         } finally {ncm.close()}
+    }
+
+    @Test fun neighborReceiptSchemaAndReporterAllowanceAreExactAndLifetimeBounded() {
+        val lines=mutableListOf<String>(); var clock=1L
+        val reporter=CarPlayAudioDiagnosticReporter(524,{clock},lines::add)
+        fun receipt(index:Int)="USB network stage=nd-receipt receipt=$index icmp=ns shape=complete source=unspecified target=other hopLimit=valid checksum=valid tunWrite=written"
+        repeat(64) {reporter.record("media stage=audio-focus-change")}
+        repeat(3) {for(index in 1..8) reporter.record(receipt(index))}
+        assertEquals("busy detail window cannot bury ND write receipts",8,lines.count {it.contains("stage=nd-receipt ")})
+        clock+=2_000_000_000L
+        for(index in 1..8) reporter.record(receipt(index))
+        assertEquals(8,lines.count {it.contains("stage=nd-receipt ")})
+        val line=receipt(1)
+        assertNotNull(CarPlayAudioDiagnostics.sanitize(524,line))
+        for (suffix in listOf(" address=fe80::1"," mac=private"," payload=private"," options=private"," credential=private","\n"))
+            assertNull(CarPlayAudioDiagnostics.sanitize(524,line+suffix))
+        for ((old,bad) in listOf("receipt=1" to "receipt=9","icmp=ns" to "icmp=135","shape=complete" to "shape=valid",
+            "source=unspecified" to "source=fe80::1","target=other" to "target=fe80::7","hopLimit=valid" to "hopLimit=255",
+            "checksum=valid" to "checksum=1234","tunWrite=written" to "tunWrite=queued"))
+            assertNull(CarPlayAudioDiagnostics.sanitize(524,line.replace(old,bad)))
+        assertNotNull(CarPlayAudioDiagnostics.sanitize(524,line.replace("icmp=ns","icmp=na").replace("shape=complete","shape=truncated")
+            .replace("source=unspecified","source=specified").replace("target=other","target=unknown")
+            .replace("hopLimit=valid","hopLimit=invalid").replace("checksum=valid","checksum=unknown").replace("tunWrite=written","tunWrite=failed")))
     }
 
     @Test fun completionReceiptsSurviveBusyDetailWindowButStayLifetimeBounded() {

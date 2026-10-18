@@ -63,7 +63,7 @@ class MicrophonePolicyDiagnosticsTest {
         try {
             record.startRecording();policy.sample()
             assertTrue(received.await(3,TimeUnit.SECONDS))
-            assertEquals(listOf("media stage=microphone-policy scope=own source=VOICE_RECOGNITION rate=24000 permission=granted mute=false route=builtin silenced=true result=ok"),lines)
+            assertEquals(listOf("media stage=microphone-policy scope=own source=VOICE_RECOGNITION rate=24000 permission=granted mute=false route=builtin silenced=true result=ok"),lines.filter { it.startsWith("media stage=microphone-policy ") })
         } finally { policy.close();record.stop();record.release() }
     }
 

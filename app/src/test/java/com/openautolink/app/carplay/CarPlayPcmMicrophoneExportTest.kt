@@ -47,9 +47,13 @@ class CarPlayPcmMicrophoneExportTest {
         val lines=java.util.concurrent.CopyOnWriteArrayList<String>()
         val sent=CountDownLatch(1)
         val policy=CountDownLatch(1)
+        val configuration=CountDownLatch(1)
+        val effects=CountDownLatch(2)
         val reporter=CarPlayAudioDiagnosticReporter(1,System::nanoTime) {
             lines.add(it); if (it.contains("microphone-datagram-sent")) sent.countDown()
             if (it.contains("microphone-policy")) policy.countDown()
+            if (it.contains("microphone-config ")) configuration.countDown()
+            if (it.contains("microphone-effects ")) effects.countDown()
         }
         ShadowAudioRecord.setSource(object : ShadowAudioRecord.AudioRecordSource {
             override fun readInByteArray(b: ByteArray,o: Int,n: Int,blocking: Boolean): Int {
@@ -68,6 +72,10 @@ class CarPlayPcmMicrophoneExportTest {
                 sink.onMicrophoneStarted(MicrophoneStreamId(session,100,"telephony",1),mic)
                 assertTrue("actual send receipt omitted by sanitizer",sent.await(3,TimeUnit.SECONDS))
                 assertTrue("actual exact-recorder policy omitted by sanitizer",policy.await(3,TimeUnit.SECONDS))
+                assertTrue("actual exact-recorder configuration omitted by sanitizer",configuration.await(3,TimeUnit.SECONDS))
+                assertTrue("actual exact-recorder effects omitted by sanitizer",effects.await(3,TimeUnit.SECONDS))
+                assertTrue(lines.any { it.contains("microphone-config scope=own requested=VOICE_COMMUNICATION rate=24000 recorder=VOICE_COMMUNICATION") })
+                assertEquals(2,lines.count { it.contains("microphone-effects ") })
                 assertTrue(lines.any { it.contains("microphone-policy scope=own source=VOICE_COMMUNICATION rate=24000 permission=granted") })
                 assertTrue(lines.any { it.endsWith("media stage=microphone-format type=100 audioType=telephony codec=LPCM rate=24000 channels=1 spf=480 source=VOICE_COMMUNICATION") })
                 assertTrue("actual capture aggregate omitted by sanitizer",lines.any {
@@ -80,13 +88,29 @@ class CarPlayPcmMicrophoneExportTest {
                 assertTrue(lines.any { it.endsWith("media stage=audio-focus-change change=-3 volumePercent=20") })
                 assertTrue(lines.any { it.endsWith("media stage=media-control index=2 outcome=sent") })
                 val contents=lines.joinToString("\n",postfix="\n")
-                val log=java.io.File(folder,"oal_pcm.log").apply { writeText(contents) }
-                val plan=com.openautolink.app.diagnostics.LogUploadArchive.select(listOf(log),log.lastModified())
-                com.openautolink.app.diagnostics.LogUploadArchive.create(plan,folder).use { archive ->
-                    java.util.zip.ZipFile(archive.file).use { zip ->
-                        assertEquals(contents,zip.getInputStream(zip.getEntry(log.name)).bufferedReader().readText())
-                    }
+                val logs=java.io.File(folder,"openautolink/logs").apply { mkdirs() }
+                val log=java.io.File(logs,"oal_pcm.log").apply { writeText(contents) }
+                val context=object : android.content.ContextWrapper(app) {
+                    override fun getExternalFilesDirs(type: String?)=arrayOf(folder)
+                    override fun getCacheDir()=folder
                 }
+                val bytes=java.io.ByteArrayOutputStream()
+                val connection=object : java.net.HttpURLConnection(java.net.URL("https://logs.example.test/upload")) {
+                    override fun connect()=Unit
+                    override fun disconnect()=Unit
+                    override fun usingProxy()=false
+                    override fun getOutputStream()=bytes
+                    override fun getResponseCode()=200
+                }
+                val result=com.openautolink.app.diagnostics.LogUploader(context,{connection},{true})
+                    .upload("https://logs.example.test/upload","synthetic-test-token","test-car")
+                assertTrue(result.toString(),result is com.openautolink.app.diagnostics.UploadResult.Success)
+                val members=mutableMapOf<String,String>()
+                java.util.zip.ZipInputStream(bytes.toByteArray().inputStream()).use { zip ->
+                    while(true) { val entry=zip.nextEntry?:break;members[entry.name]=zip.readBytes().toString(Charsets.UTF_8) }
+                }
+                assertEquals(contents,members[log.name])
+                assertFalse(members.values.any { it.contains("synthetic-test-token") })
             }
         } finally {
             sink.close(); assertTrue(sink.awaitRetired(3000)); session.close()
