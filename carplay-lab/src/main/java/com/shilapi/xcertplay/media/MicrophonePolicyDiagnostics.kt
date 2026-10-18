@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * capture resources are created. Never inspect recording clients other than this exact recorder.
  */
 internal class MicrophonePolicyDiagnostics(
-    private val query: () -> String,
+    private val query: () -> List<String>,
     private val report: (String) -> Unit,
 ) : AutoCloseable {
     private val revoked = AtomicBoolean()
@@ -29,8 +29,10 @@ internal class MicrophonePolicyDiagnostics(
         try {
             queries.execute {
                 if (revoked.get()) return@execute
-                val receipt = runCatching(query).getOrNull() ?: return@execute
-                if (!revoked.get()) runCatching { report(receipt) }
+                val receipts = runCatching(query).getOrNull() ?: return@execute
+                receipts.forEach { receipt ->
+                    if (!revoked.get()) runCatching { report(receipt) }
+                }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) { /* bounded best effort */ }
     }
@@ -46,7 +48,8 @@ internal class MicrophonePolicyDiagnostics(
                 if (app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
                     "granted" else "denied"
             }.getOrDefault("unknown")
-            val mute = runCatching { app.getSystemService(AudioManager::class.java).isMicrophoneMute.toString() }
+            val manager = runCatching { app.getSystemService(AudioManager::class.java) }.getOrNull()
+            val mute = runCatching { manager!!.isMicrophoneMute.toString() }
                 .getOrDefault("unknown")
             val route = runCatching {
                 val device = record.routedDevice
@@ -62,11 +65,15 @@ internal class MicrophonePolicyDiagnostics(
             }.getOrDefault("unknown")
             // API 29+, available at this module's minSdk 32. Exact recorder configuration only;
             // null/restricted results do not mean unsilenced. No session/device IDs or names.
-            val silenced = runCatching { record.activeRecordingConfiguration?.isClientSilenced?.toString() }
+            val config = runCatching { record.activeRecordingConfiguration }
+            val silenced = config.mapCatching { it?.isClientSilenced?.toString() }
                 .getOrNull() ?: "unknown"
             val unknown = listOf(permission, mute, route, silenced).count { it == "unknown" }
             val result = if (unknown == 0) "ok" else if (unknown == 4) "unavailable" else "partial"
-            "media stage=microphone-policy scope=own source=$source rate=$rate permission=$permission mute=$mute route=$route silenced=$silenced result=$result"
+            listOf(
+                "media stage=microphone-policy scope=own source=$source rate=$rate permission=$permission mute=$mute route=$route silenced=$silenced result=$result",
+                MicrophoneConfigurationDiagnostics.receipt(record, manager, source, rate, config),
+            ) + MicrophoneEffectDiagnostics.receipts(config, source, rate)
         }, report)
     }
 }

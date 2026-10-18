@@ -50,7 +50,8 @@ class CarPlayAudioOwnershipExportTest {
             // Stop future ticks after the initial snapshot; track creation must provide this evidence.
             executor.submit {}.get(3,TimeUnit.SECONDS)
             executor.shutdownNow()
-            sink.onAudioStarted(AudioStreamId(101,"default"),AudioOutputSupport.negotiate(0x4000L,101,"default")!!,0)
+            // Primary media actually requests focus; alternate-only guidance intentionally does not.
+            sink.onAudioStarted(AudioStreamId(100,"media"),AudioOutputSupport.negotiate(0x4000L,100,"media")!!,0)
             assertTrue("new own track must publish actual successful setVolume without waiting five seconds",applied.await(1,TimeUnit.SECONDS))
         } finally { sink.close();assertTrue(sink.awaitRetired(3000)) }
     }

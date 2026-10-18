@@ -10,7 +10,7 @@ class UsbNetworkStartupDiagnosticsTest {
     private fun frame() = EthernetIpv6Codec.build(ByteArray(6),ByteArray(6),packet(58).apply { this[40]=135.toByte() })
 
     @Test fun disabledCallsNeverWaitForCrossThreadDiagnosticMonitor() {
-        for (reason in listOf("stop", "retire", "deadline", "in-cap", "out-cap", "send-cap")) {
+        for (reason in listOf("stop", "retire", "deadline", "in-cap", "out-cap", "send-cap", "nd-cap")) {
             val now=java.util.concurrent.atomic.AtomicLong(1_000_000L)
             val lines=java.util.concurrent.CopyOnWriteArrayList<String>()
             val trace=UsbNetworkStartupDiagnostics(lines::add) {now.get()}
@@ -23,6 +23,7 @@ class UsbNetworkStartupDiagnosticsTest {
                 "in-cap" -> repeat(16) { packet(UsbNetworkStartupDiagnostics.Direction.IN) }
                 "out-cap" -> repeat(16) { packet(UsbNetworkStartupDiagnostics.Direction.OUT) }
                 "send-cap" -> repeat(16) { trace.beginSend(frame()) }
+                "nd-cap" -> repeat(8) { trace.beginNeighbor(this.packet(58).apply {this[40]=135.toByte()}) }
             }
             val before=lines.toList()
             val locked=java.util.concurrent.CountDownLatch(1)
@@ -35,9 +36,11 @@ class UsbNetworkStartupDiagnosticsTest {
                 assertTrue(locked.await(5,java.util.concurrent.TimeUnit.SECONDS))
                 val calls=workers.submit {
                     repeat(32) {
-                        if (reason !in listOf("out-cap", "send-cap")) packet(UsbNetworkStartupDiagnostics.Direction.IN)
-                        if (reason !in listOf("in-cap", "send-cap")) packet(UsbNetworkStartupDiagnostics.Direction.OUT)
-                        if (reason !in listOf("in-cap", "out-cap")) assertNull(trace.beginSend(frame()))
+                        if (reason !in listOf("out-cap", "send-cap", "nd-cap")) packet(UsbNetworkStartupDiagnostics.Direction.IN)
+                        if (reason !in listOf("in-cap", "send-cap", "nd-cap")) packet(UsbNetworkStartupDiagnostics.Direction.OUT)
+                        if (reason !in listOf("in-cap", "out-cap", "nd-cap")) assertNull(trace.beginSend(frame()))
+                        if (reason in listOf("stop", "retire", "deadline", "nd-cap"))
+                            assertNull(trace.beginNeighbor(this.packet(58).apply {this[40]=135.toByte()}))
                     }
                 }
                 try { calls.get(1,java.util.concurrent.TimeUnit.SECONDS) }

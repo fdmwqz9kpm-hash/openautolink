@@ -65,7 +65,7 @@ Check the source revision and release notes for your installed build. USB hot-pl
 
 - No iPhone companion app or additional projection hardware.
 - **USB projection**, with wireless connection retained separately for development.
-- **Video, touch, music and phone calls over USB**. Incoming and outgoing calls were confirmed on the maintainer's Blazer EV without vehicle Bluetooth. [Leave the iPhone unpaired from vehicle Bluetooth](#usb-1) to avoid repeated music pauses.
+- **Video, touch, music and phone calls over USB**. Call operation was reported without vehicle Bluetooth, but later tests exposed silent uplink; **reliable two-way call audio remains unverified**. [Leave the iPhone unpaired from vehicle Bluetooth](#usb-1) to avoid repeated music pauses.
 - **Multi-touch gestures**, including map pinch-to-zoom.
 - **Adjustable video quality, Fit to window and safe-control calibration** for wide or curved screens.
 - **Music information and artwork on supported vehicle displays**. Cluster route guidance is still being refined.
@@ -104,7 +104,7 @@ For wireless Android Auto, install `openautolink-companion-vX.Y.Z.apk` from the 
 
 ### iPhone
 
-No OAL iPhone companion is required. For **USB**, connect a data-capable cable and **leave the iPhone unpaired from vehicle Bluetooth** to avoid GM Bluetooth competing with CarPlay and constantly pausing media. Music and calls work over USB; car Wi-Fi fields are not required for wired startup. For **wireless**, pair through the **car's system Bluetooth settings** and configure the wireless fields below. USB Trust approval is separate from Bluetooth pairing. Supply the [required CarPlay authentication files](docs/carplay-private-mfi-assets.md) separately.
+No OAL iPhone companion is required. For **USB**, connect a data-capable cable and **leave the iPhone unpaired from vehicle Bluetooth** to avoid GM Bluetooth competing with CarPlay and constantly pausing media. USB carries CarPlay audio, but call microphone reliability remains under investigation; car Wi-Fi fields are not required for wired startup. For **wireless**, pair through the **car's system Bluetooth settings** and configure the wireless fields below. USB Trust approval is separate from Bluetooth pairing. Supply the [required CarPlay authentication files](docs/carplay-private-mfi-assets.md) separately.
 
 ### Other AAOS systems
 
@@ -177,7 +177,7 @@ If you previously turned off iPhone projection, OAL retains that choice. Only in
 3. Connect the iPhone to a data-capable head-unit USB port with a data-capable cable. If another projection is active, choose **Switch** to attempt temporary USB takeover.
 4. [Tap **OK** on both GM USB access prompts every time](#gm-usb-prompts--android-auto-and-carplay), even if you saved the choice. Accept OAL's separate local VPN consent when requested. If the iPhone asks to trust the connection, unlock it and approve **Trust** on the iPhone itself.
 
-**Music and calls work over USB without vehicle Bluetooth.** The maintainer confirmed music playback plus both outgoing and incoming CarPlay calls on the 2024 Chevrolet Blazer EV with the iPhone disconnected from vehicle Bluetooth. This is a setup correction, not a requirement to turn off the car's entire Bluetooth adapter. **Do not apply it to wireless Android Auto:** keep that Android phone's required Bluetooth pairing and **Phone calls** profile enabled.
+**Leave the iPhone unpaired to avoid competing Bluetooth playback control.** Music and call operation were reported on the maintainer's Blazer EV, but later incoming-call tests found silent microphone input even with CarPlay selected and caller playback working. **Two-way call microphone reliability is not yet verified**; see [call limitations](docs/phone-calls.md). This is a setup correction, not a requirement to turn off the car's entire Bluetooth adapter. **Do not apply it to wireless Android Auto:** keep that Android phone's required Bluetooth pairing and **Phone calls** profile enabled.
 
 USB CarPlay does not require Bluetooth pairing or Wi-Fi setup. The VPN permission is used locally for the USB connection—not an Internet VPN service. Another active VPN can conflict. USB access and permission support vary by head unit.
 
@@ -224,7 +224,7 @@ Under **CarPlay → CarPlay UI scale**:
 
 ## Keep incoming and active calls in Android Auto or CarPlay on GM
 
-For **USB CarPlay**, leave the iPhone unpaired from vehicle Bluetooth: incoming and outgoing calls work over USB, and avoiding the Bluetooth connection prevents repeated music pauses. The native Bluetooth Phone-app settings below are not required for that Bluetooth-free CarPlay setup.
+For **USB CarPlay**, leave the iPhone unpaired from vehicle Bluetooth: call audio uses the CarPlay path, and avoiding the Bluetooth connection prevents repeated music pauses. Car microphone reliability is still under investigation. The native Bluetooth Phone-app settings below are not required for that Bluetooth-free CarPlay setup.
 
 For **Android Auto**, or when managing native GM call-screen behavior, use these vehicle settings to stop GM's native Phone app from covering the projected incoming-call and in-call controls on the center display:
 
