@@ -16,6 +16,7 @@ object CarPlaySettingsPolicy {
             settings.ssid, settings.receiverAddress, settings.apFrequencyMhz, display,
             networkFamily = settings.networkFamily, apSecurity = settings.apSecurity,
             localAddress = settings.localAddress,
+            restrictionPolicy = com.openautolink.app.carplay.CarPlayRestrictionPolicy.from(settings),
         )
     }
 

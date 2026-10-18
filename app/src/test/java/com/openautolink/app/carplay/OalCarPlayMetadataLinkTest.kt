@@ -41,7 +41,9 @@ class OalCarPlayMetadataLinkTest {
         assertTrue(receipts.any { it.contains("transition=clear reason=empty") })
         link.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,listOf(77)) })
         now = 35000; link.tick()
-        assertTrue(receipts.any { it.contains("transition=clear reason=stale") })
+        assertFalse("quiet selection does not emit a fabricated stale clear", receipts.any { it.contains("transition=clear reason=stale") })
+        now = 125000; link.tick()
+        assertTrue(receipts.any { it.contains("transition=clear reason=expired") })
         assertFalse(receipts.any { it.contains("Private") || it.contains("77") })
         receipts.filter { it.startsWith("carplay-nav") }.forEach { assertNotNull(it, CarPlayAudioDiagnostics.sanitize(1,it)) }
         link.close()

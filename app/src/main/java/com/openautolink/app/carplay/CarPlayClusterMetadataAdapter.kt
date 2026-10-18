@@ -33,12 +33,27 @@ internal object CarPlayClusterMetadataAdapter {
             48 -> ManeuverType.TURN_SHARP_RIGHT
             49,52 -> ManeuverType.TURN_SLIGHT_LEFT
             50,53 -> ManeuverType.TURN_SLIGHT_RIGHT
-            3,5,11,51 -> ManeuverType.STRAIGHT
-            6 -> ManeuverType.ROUNDABOUT_ENTER
-            7 -> ManeuverType.ROUNDABOUT_EXIT
-            10,12,24,25,27 -> ManeuverType.DESTINATION
+            3,5 -> ManeuverType.STRAIGHT
+            11 -> ManeuverType.DEPART
+            6 -> when (value.drivingSide) {
+                0 -> ManeuverType.ROUNDABOUT_ENTER_CCW
+                1 -> ManeuverType.ROUNDABOUT_ENTER_CW
+                else -> ManeuverType.ROUNDABOUT_ENTER
+            }
+            7 -> when (value.drivingSide) {
+                0 -> ManeuverType.ROUNDABOUT_EXIT_CCW
+                1 -> ManeuverType.ROUNDABOUT_EXIT_CW
+                else -> ManeuverType.ROUNDABOUT_EXIT
+            }
+            10,12,27 -> ManeuverType.DESTINATION
+            24 -> ManeuverType.DESTINATION_LEFT
+            25 -> ManeuverType.DESTINATION_RIGHT
+            15,16,17 -> ManeuverType.FERRY
             // 19 is a roundabout U-turn, but no exit ordinal is sourced for the
-            // host's mandatory ordinal. Leave unknown instead of inventing exit 1.
+            // host's mandatory ordinal. 51 is an unspecified highway change:
+            // neither traffic side nor an absent angle proves straight/left/right.
+            // Leave unsupported instructions unknown instead of inventing geometry.
+            0,19,51 -> ManeuverType.UNKNOWN
             else -> ManeuverType.UNKNOWN
         }
         val exit = (value.maneuverType - 27).takeIf { value.maneuverType in 28..46 && type != ManeuverType.UNKNOWN }

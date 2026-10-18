@@ -188,7 +188,21 @@ OAL can remember more than one iPhone's CarPlay trust. Connect the iPhone you wa
 
 Wireless CarPlay is still in development and is not working in the maintainer's vehicle. Use USB for now. Advanced wireless configuration is covered in the [network guide](docs/carplay-network-contract.md).
 
-### Video and display
+### CarPlay UI restrictions (optional)
+
+While parked, open **Settings → Connection → Normal connections → CarPlay → CarPlay UI restrictions**.
+**Vehicle-based UI restrictions** is saved independently of Android Auto and defaults **OFF**.
+Enable it to declare keyboard/list restrictions and allow the main-screen UI only with fresh,
+valid vehicle Park information. Missing/stale gear remains restricted. This policy is not yet
+validated on every vehicle, so ordinary builds do not enable it automatically.
+
+**Always in Park** is a separate CarPlay override, also default **OFF**, available when restriction
+control is enabled. It releases main-screen keyboard/list restrictions even without Park information;
+use it only while safely parked. It does not change actual gear, Android Auto settings, secondary
+displays or video permissions. Tap **Save & Reconnect** to apply either choice to a fresh session.
+No special build flag is needed. See the [policy and validation limits](docs/carplay-driving-restriction-policy.md).
+
+### Video and display controls
 
 - New CarPlay settings default to **Automatic** resolution targeting a decoder-qualified **1440p-class** image and **Codec → Automatic (H.264 + qualified HEVC)**, with qualified lower-detail fallbacks. Saved video choices are retained. If you choose manual settings, open **OAL → Settings → Video → CarPlay**, select **Manual** under **Resolution / detail**, then choose **1440p** (recommended) or try **4K** if supported. **Fit to window (standard detail tiers)** keeps the selected detail tier at the available window aspect without stretching; custom resolutions retain their chosen aspect ratio. Tap **Save & Reconnect** to apply.
 - **Codec → Automatic (H.264 + qualified HEVC)** is the default for new CarPlay settings. If you choose manual video settings, we recommend this codec setting with **1440p** for the best balance of detail and performance. It offers HEVC only when the exact size/rate qualifies and retains H.264; it does **not** force the iPhone to use HEVC or change your resolution. Existing saved H.264 choices are preserved, so users with saved H.264 settings should select Automatic explicitly. If connection fails, select **H.264** and **Save & Reconnect**. 4K adds bandwidth and processing demand; return to 1440p if it stutters. Blurry video alone does not establish the negotiated resolution.

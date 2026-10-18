@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.532 — cluster guidance and vehicle data
+
+### Cluster guidance and maneuver coverage
+- Withdraw unavailable guidance instead of sending a loading Trip that GM labels “Rerouting”; retain source-route identity so a later usable instruction can restart guidance. Preserve deliberate host stop, arrival and generation ownership boundaries.
+- Retain CarPlay's selected maneuver across omitted-current route deltas and quiet intervals within the finite route lifetime. Explicit empty selection, route replacement, stop and arrival still invalidate guidance. Expire dynamic estimates independently rather than letting unrelated fields renew them.
+- Apply AndroidX roundabout constraints by maneuver family: generic entry/exit cannot carry an exit ordinal; combined types require a sourced positive ordinal. Unsupported direction or geometry does not become an invented left turn, straight arrow or exit 1.
+- Expand original directional vector coverage and legacy Android Auto ferry/roundabout mapping; clear old turn artwork and maneuver-only fields when a new turn arrives while preserving distance-only delta behavior.
+
+### Vehicle metadata, GPS and optional CarPlay restrictions
+- Supply source-qualified vehicle identity, connector metadata and outside temperature through the existing production adapters. Retain missing/unsupported outcomes; do not invent EV profiles, capacities or charging powers.
+- Keep GPS provider/source timestamps and freshness distinct from forwarding time. Physical phone GPS-source selection remains unverified.
+- Add independently saved, default-OFF vehicle-based CarPlay UI restrictions and a separate default-OFF Always in Park override. Missing/stale gear stays restricted unless the explicit override is enabled. Neither option changes actual gear, Android Auto policy or video permission.
+- Use the same observation receipt sample for gear status authority, avoiding a second clock sample invalidating an otherwise valid observation.
+
+### Verification and limitations
+- Full app, receiver and companion debug/release suites: 4,576 test executions, zero failures/errors, two existing optional private-archive replay skips. Independent source review, real Android vector rendering, both native ABI builds, and app/receiver release lint passed.
+- Physical cluster recovery/glyph rendering, vehicle-data/phone GPS-source consumption and restrictions remain vehicle-specific acceptance gates; software verification does not claim these reported failures are resolved on every vehicle. Direct-AA numeric roundabout angle rendering remains deferred until its source convention is proved; current phone artwork and neutral fallbacks remain available.
+- No companion behavior changes. Internal Play distribution covers the original and four existing capacity-group listings only; the paused Community track and tester lists are unchanged.
+
 ## 0.1.530
 
 ### Multiple iPhones with CarPlay

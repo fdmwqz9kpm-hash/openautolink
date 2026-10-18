@@ -23,6 +23,7 @@ class CarPlayEvSourceValidityTest {
     }
     class Manager {
         var accept = true
+        var includeTemperature = false
         var config: Any? = Config(1) // HAL ONCHANGE, not the requested SENSOR_RATE_ONCHANGE
         var readFailure = false
         var readStatus = 0
@@ -30,12 +31,12 @@ class CarPlayEvSourceValidityTest {
         val reads = java.util.concurrent.CopyOnWriteArrayList<Int>()
         var duringSubscribe: ((Int, CarPropertyEventCallback) -> Unit)? = null
         lateinit var callback: CarPropertyEventCallback
-        fun getCarPropertyConfig(id: Int): Any? = if (id == RANGE || id == BATTERY) config else null
+        fun getCarPropertyConfig(id: Int): Any? = if (id == RANGE || id == BATTERY || (includeTemperature && id == 0x11600703)) config else null
         fun getProperty(id: Int, area: Int): Value {
             reads.add(id)
             duringRead?.invoke(id)
             if (readFailure) error("read unavailable")
-            return Value(id, if (id == RANGE) 200000f else 50000f,
+            return Value(id, when (id) { RANGE -> 200000f; 0x11600703 -> -12.6f; else -> 50000f },
                 if (id == RANGE) 28_705_000_000 else 34_800_000_000, readStatus)
         }
         fun subscribePropertyEvents(id: Int, rate: Float, cb: CarPropertyEventCallback): Boolean {
@@ -81,6 +82,21 @@ class CarPlayEvSourceValidityTest {
             assertEquals(200, f.adapter.snapshot()!!.rangeKm)
             assertEquals(50000L, f.adapter.snapshot()!!.currentChargeWh)
             assertEquals("reading must not fabricate a heartbeat", original, f.forwarder.latestVehicleData.value.evObservationMetadata)
+        } finally { unmockkStatic(SystemClock::class) }
+    }
+
+    @Test fun temperatureUsesTheSameSerializedStatusRevalidationWithoutChangingItsEventTime() {
+        mockkStatic(SystemClock::class)
+        try {
+            val f = Fixture(); f.manager.includeTemperature = true; f.register()
+            val before = f.forwarder.latestVehicleData.value.evObservationMetadata.getValue("ENV_OUTSIDE_TEMPERATURE")
+            assertEquals(-13, f.adapter.snapshot()!!.outsideTemperatureC)
+            f.now = 85000; f.register()
+            val after = f.forwarder.latestVehicleData.value.evObservationMetadata.getValue("ENV_OUTSIDE_TEMPERATURE")
+            assertEquals(85000L, after.receivedElapsedMs)
+            assertEquals(before.timestampElapsedNanos, after.timestampElapsedNanos)
+            f.manager.readStatus = 1; f.now = 90000; f.register()
+            assertNull(f.adapter.snapshot()?.outsideTemperatureC)
         } finally { unmockkStatic(SystemClock::class) }
     }
 

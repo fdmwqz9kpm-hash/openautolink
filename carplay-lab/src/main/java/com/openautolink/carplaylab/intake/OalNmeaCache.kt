@@ -2,14 +2,18 @@ package com.openautolink.carplaylab.intake
 
 /** Constant-space host NMEA cache. Never synthesizes fix, satellites, altitude or velocity. */
 class OalNmeaCache(private val elapsedMs: () -> Long) {
-    private class Sample(val sentence: String, val receivedMs: Long)
+    private class Sample(val sentence: String, val receivedMs: Long, val sourceAgeMs: Long?)
     private val samples = mutableMapOf<Int, Sample>()
 
-    @Synchronized fun accept(sentence: String): Boolean {
+    @Synchronized fun accept(sentence: String): Boolean = acceptWithSourceAge(sentence, null)
+
+    /** Source age is independently qualified by the real host adapter; null is fixture/wire syntax only. */
+    @Synchronized fun acceptWithSourceAge(sentence: String, sourceAgeMs: Long?): Boolean {
         if (sentence.length > 132) return false
         val text = sentence.trimEnd('\r', '\n')
         val selector = when (text.substringBefore(',').takeLast(3)) { "GGA" -> 1; "RMC" -> 2; else -> return false }
         samples.remove(selector) // A newer invalid fix revokes the retained valid fix.
+        if (sourceAgeMs != null && sourceAgeMs !in 0..3000) return false
         if (text.length !in 10..128 || text.any { it.code !in 32..126 } ||
             !text.startsWith("$") || text.substring(1,3) !in setOf("GP", "GN", "GL")) return false
         val star = text.indexOf('*')
@@ -27,7 +31,7 @@ class OalNmeaCache(private val elapsedMs: () -> Long) {
         if (!time.matches(Regex("[0-9]{6}(\\.[0-9]+)?")) ||
             time.take(2).toInt() !in 0..23 || time.substring(2,4).toInt() !in 0..59 ||
             time.substring(4,6).toInt() !in 0..60) return false
-        samples[selector] = Sample(text, elapsedMs())
+        samples[selector] = Sample(text, elapsedMs(), sourceAgeMs)
         return true
     }
 
@@ -44,7 +48,8 @@ class OalNmeaCache(private val elapsedMs: () -> Long) {
     @Synchronized fun latest(requested: Set<Int>): String? {
         val now = elapsedMs()
         return listOf(1,2).filter { it in requested }.mapNotNull { id ->
-            samples[id]?.takeIf { now >= it.receivedMs && now - it.receivedMs <= 3000 }?.sentence
+            samples[id]?.takeIf { now >= it.receivedMs && now - it.receivedMs <= 3000 &&
+                (it.sourceAgeMs == null || now - it.receivedMs <= 3000 - it.sourceAgeMs) }?.sentence
         }.takeIf { it.isNotEmpty() }?.joinToString("\r\n", postfix = "\r\n")
     }
 }

@@ -81,6 +81,8 @@ data class AirPlayConfig(
     val mainBufferedAudio: Boolean = false,
     /** Narrow lab media closure: PCM only; never advertise AAC/Opus without a renderer. */
     val lpcmOnly: Boolean = false,
+    /** Source-qualified ordinary-CarPlay UI restrictions; not parked-video support. */
+    val drivingRestrictions: Boolean = false,
 )
 
 /** The offer, SETUP and controls must all honor the user's audio-output setting. */

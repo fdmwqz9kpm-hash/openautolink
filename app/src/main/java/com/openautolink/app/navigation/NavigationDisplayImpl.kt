@@ -21,17 +21,26 @@ class NavigationDisplayImpl : NavigationDisplay {
         val prev = _currentManeuver.value
 
         val type = if (state.maneuver != null) ManeuverMapper.fromWire(state.maneuver) else prev?.type ?: ManeuverType.UNKNOWN
-        val distanceMeters = state.distanceMeters ?: prev?.distanceMeters
-        val road = state.road ?: prev?.roadName
-        val etaSeconds = state.etaSeconds ?: prev?.etaSeconds
-        val navImage = state.navImageBase64 ?: prev?.navImageBase64
-        val cue = state.cue ?: prev?.cue
-        val roundaboutExit = state.roundaboutExitNumber ?: prev?.roundaboutExitNumber
+        val newManeuver = state.maneuver != null
+        val distanceMeters = state.distanceMeters ?: prev?.distanceMeters.takeUnless { newManeuver }
+        val road = state.road ?: prev?.roadName.takeUnless { newManeuver }
+        val etaSeconds = state.etaSeconds ?: prev?.etaSeconds.takeUnless { newManeuver }
+        // An explicit turn event starts a new graphic/ordinal snapshot even if
+        // its enum repeats. Only distance/ETA deltas may retain old turn data.
+        val navImage = state.navImageBase64 ?: prev?.navImageBase64.takeUnless { newManeuver }
+        val cue = state.cue ?: prev?.cue.takeUnless { newManeuver }
+        val roundaboutExit = state.roundaboutExitNumber ?: prev?.roundaboutExitNumber.takeUnless { newManeuver }
         val currentRoad = state.currentRoad ?: prev?.currentRoad
         val destination = state.destination ?: prev?.destination
         val etaFormatted = state.etaFormatted ?: prev?.etaFormatted
-        val displayDistance = state.displayDistance ?: prev?.displayDistance
-        val displayDistanceUnit = state.displayDistanceUnit ?: prev?.displayDistanceUnit
+        // A formatted value and its unit are one source observation. New raw
+        // distance or an explicit turn invalidates the previous pair; a partial
+        // pair must never combine with old units/value from another observation.
+        val hasDistanceUpdate = state.distanceMeters != null || state.displayDistance != null || state.displayDistanceUnit != null
+        val completeDisplayPair = !state.displayDistance.isNullOrEmpty() && !state.displayDistanceUnit.isNullOrEmpty()
+        val retainDisplayPair = !newManeuver && !hasDistanceUpdate
+        val displayDistance = if (completeDisplayPair) state.displayDistance else prev?.displayDistance.takeIf { retainDisplayPair }
+        val displayDistanceUnit = if (completeDisplayPair) state.displayDistanceUnit else prev?.displayDistanceUnit.takeIf { retainDisplayPair }
         val timeToArrival = state.timeToArrivalSeconds ?: prev?.timeToArrivalSeconds
         val destDistMeters = state.destDistanceMeters ?: prev?.destDistanceMeters
         val destDistDisplay = state.destDistanceDisplay ?: prev?.destDistanceDisplay
@@ -48,7 +57,7 @@ class NavigationDisplayImpl : NavigationDisplay {
             LaneInfo(lane.directions.map { dir ->
                 LaneDirectionInfo(dir.shape, dir.highlighted)
             })
-        } ?: prev?.lanes
+        } ?: prev?.lanes.takeUnless { newManeuver }
 
         _currentManeuver.value = ManeuverState(
             type = type,
@@ -60,6 +69,7 @@ class NavigationDisplayImpl : NavigationDisplay {
             lanes = lanes,
             cue = cue,
             roundaboutExitNumber = roundaboutExit,
+            roundaboutExitAngle = state.roundaboutExitAngle ?: prev?.roundaboutExitAngle.takeUnless { newManeuver },
             currentRoad = currentRoad,
             destination = destination,
             etaFormatted = etaFormatted,

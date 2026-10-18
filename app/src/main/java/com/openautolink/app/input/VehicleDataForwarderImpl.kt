@@ -42,7 +42,8 @@ class VehicleDataForwarderImpl(
         // Minimum interval between vehicle data sends (ms)
         private const val SEND_INTERVAL_MS = 500L
         private const val EV_STATUS_READ_INTERVAL_MS = 5_000L
-        private val CARPLAY_EV_PROPERTIES = setOf("RANGE_REMAINING", "EV_BATTERY_LEVEL", "EV_CURRENT_BATTERY_CAPACITY")
+        private val CARPLAY_EV_PROPERTIES = setOf("RANGE_REMAINING", "EV_BATTERY_LEVEL", "EV_CURRENT_BATTERY_CAPACITY", "ENV_OUTSIDE_TEMPERATURE")
+        private val CARPLAY_STATUS_PROPERTIES = CARPLAY_EV_PROPERTIES + "GEAR_SELECTION"
 
         /** Hardcoded property IDs for GM AAOS runtimes that strip VehiclePropertyIds field names.
          *  Integer IDs are stable across all AAOS implementations (defined in HAL spec). */
@@ -525,7 +526,8 @@ class VehicleDataForwarderImpl(
             return try {
                 val pv = pmClass.getMethod("getProperty", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
                     .invoke(pm, propId, 0)
-                pv?.javaClass?.getMethod("getValue")?.invoke(pv)?.toString()
+                if (pv?.javaClass?.getMethod("getStatus")?.invoke(pv) != 0) null
+                else pv.javaClass.getMethod("getValue").invoke(pv) as? String
             } catch (t: Throwable) {
                 DiagnosticLog.d("vhal", "$fieldName: read failed: ${t.rootCause().message}")
                 null
@@ -537,7 +539,8 @@ class VehicleDataForwarderImpl(
             return try {
                 val pv = pmClass.getMethod("getProperty", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
                     .invoke(pm, propId, 0)
-                pv?.javaClass?.getMethod("getValue")?.invoke(pv) as? Int
+                if (pv?.javaClass?.getMethod("getStatus")?.invoke(pv) != 0) null
+                else pv.javaClass.getMethod("getValue").invoke(pv) as? Int
             } catch (t: Throwable) {
                 DiagnosticLog.d("vhal", "$fieldName: read failed: ${t.rootCause().message}")
                 null
@@ -554,10 +557,11 @@ class VehicleDataForwarderImpl(
             return try {
                 val pv = pmClass.getMethod("getProperty", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
                     .invoke(pm, propId, 0)
-                val value = pv?.javaClass?.getMethod("getValue")?.invoke(pv)
+                if (pv?.javaClass?.getMethod("getStatus")?.invoke(pv) != 0) return null
+                val value = pv.javaClass.getMethod("getValue").invoke(pv)
                 when (value) {
                     is IntArray -> value.toList()
-                    is Array<*> -> value.filterIsInstance<Int>()
+                    is Array<*> -> if (value.all { it is Int }) value.filterIsInstance<Int>() else null
                     else -> null
                 }
             } catch (t: Throwable) {
@@ -774,7 +778,7 @@ class VehicleDataForwarderImpl(
     }
 
     /** AVAILABLE on-change callbacks are not a status heartbeat: Car API may omit status-only events. */
-    private fun evStatusReadDue(): Boolean = CARPLAY_EV_PROPERTIES.any { name ->
+    private fun evStatusReadDue(): Boolean = CARPLAY_STATUS_PROPERTIES.any { name ->
         val id = VEHICLE_PROPERTY_ID_FALLBACK.getValue(name)
         val observation = evObservationMetadata[name]
         id in trackedPropertyIds && propertyChangeModes[id] in setOf(0, 1) &&
@@ -783,7 +787,7 @@ class VehicleDataForwarderImpl(
 
     /** Called only on the serialized start/refresh lane. Never hold the monitor across Binder. */
     private fun refreshEvStatusReads(manager: Any, generation: Long, lifecycle: Long) {
-        for (name in CARPLAY_EV_PROPERTIES) {
+        for (name in CARPLAY_STATUS_PROPERTIES) {
             val id = VEHICLE_PROPERTY_ID_FALLBACK.getValue(name)
             val sequence = synchronized(this) {
                 if (!isStartCurrent(lifecycle) || propertyManager !== manager || registrationGeneration != generation ||
@@ -795,12 +799,23 @@ class VehicleDataForwarderImpl(
             val read = runCatching {
                 manager.javaClass.getMethod("getProperty", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
                     .invoke(manager, id, 0)
-            }.getOrNull()
+            }.getOrNull()?.takeIf { value ->
+                // A Park-confirming read must identify the requested global property itself.
+                // Never relabel a mismatched Binder result with the requested gear property ID.
+                name != "GEAR_SELECTION" || runCatching {
+                    value.javaClass.getMethod("getPropertyId").invoke(value) == id &&
+                        value.javaClass.getMethod("getAreaId").invoke(value) == 0
+                }.getOrDefault(false)
+            }
             synchronized(this) {
                 if (!isStartCurrent(lifecycle) || propertyManager !== manager || registrationGeneration != generation ||
                     id !in trackedPropertyIds || !propertyPermitted(id) || (evObservationMetadata[name]?.sequence ?: -1L) != sequence) return@synchronized
                 // A newer callback/error always outranks an in-flight read, including read failure.
-                val observation = if (read != null) observationFrom(read, id, authoritative = true) else
+                val observation = if (read != null) observationFrom(read, id, authoritative = true).let {
+                    // This exact completed read has one receipt/authority sample. A second clock
+                    // read can cross a millisecond and fail the policy's intentional equality fence.
+                    it.copy(statusReadElapsedMs = it.receivedElapsedMs)
+                } else
                     VehiclePropertyObservation(null, SystemClock.elapsedRealtime(), 1,
                         registrationGeneration = generation, propertyId = id, subscriptionActive = true,
                         sequence = observationSequence.incrementAndGet(), changeMode = propertyChangeModes[id])
@@ -1286,6 +1301,8 @@ class VehicleDataForwarderImpl(
             observations.putAll(mapOf(EvLearnedRateEstimator.MOTOR_POWER_OBSERVATION to it))
         }
 
+        val infoAuthorized = desiredActive && isActive && propertyManager != null &&
+            context.checkSelfPermission("android.car.permission.CAR_INFO") == PackageManager.PERMISSION_GRANTED
         return ControlMessage.VehicleData(
             speedKmh = speed,
             gear = gear,
@@ -1319,11 +1336,11 @@ class VehicleDataForwarderImpl(
             evRegenBrakingLevel = evRegenLevel,
             evStoppingMode = evStoppingMode,
             distanceDisplayUnits = distanceDisplayUnits,
-            carMake = carMake,
-            carModel = carModel,
-            carYear = carYear,
-            fuelTypes = fuelTypes,
-            evConnectorTypes = evConnectorTypes,
+            carMake = carMake.takeIf { infoAuthorized },
+            carModel = carModel.takeIf { infoAuthorized },
+            carYear = carYear.takeIf { infoAuthorized },
+            fuelTypes = fuelTypes.takeIf { infoAuthorized },
+            evConnectorTypes = evConnectorTypes.takeIf { infoAuthorized },
             tirePressuresKpa = tirePressures,
             absActive = absActive,
             tractionControlActive = tcActive,

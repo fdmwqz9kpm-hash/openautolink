@@ -91,6 +91,41 @@ class ClusterMainSession : Session() {
     private var bindingLease: ClusterBindingRegistry.SessionLease? = null
     private var tripOutcomeLogged = false
     private var observedRoute: Long? = null
+    // Reject only this exact failed instruction, not its source epoch. No timer retries.
+    private var rejectedManeuver: ManeuverState? = null
+    private var lastAvailabilityOutcome: AvailabilityOutcome? = null
+
+    private enum class AvailabilityOutcome(val marker: String) {
+        IDLE("idle"), UNAVAILABLE("unavailable"), AVAILABLE("available"),
+        BUILD_FAILED("build-failed"), UPDATE_FAILED("update-failed"),
+        START_FAILED("start-failed"), SUPPRESSED("suppressed"),
+    }
+
+    private fun logAvailability(outcome: AvailabilityOutcome) {
+        if (lastAvailabilityOutcome == outcome) return
+        lastAvailabilityOutcome = outcome
+        DiagnosticLog.i(
+            "cluster",
+            "Guidance availability outcome=${outcome.marker} generation=${bindingLease?.generation}",
+        )
+    }
+
+    /** Caller holds the lifecycle lock; this never clears/suppresses source demand. */
+    private fun withdrawGuidance(navManager: NavigationManager, outcome: AvailabilityOutcome) {
+        arrivalTimeoutJob?.cancel()
+        arrivalTimeoutJob = null
+        arrivalTerminalValidity = null
+        tripOutcomeLogged = false
+        logAvailability(outcome)
+        if (navigationLifecycle.onGuidanceUnavailable() == ClusterNavigationLifecyclePolicy.Action.END) {
+            try {
+                navManager.navigationEnded()
+            } catch (_: Exception) {
+                // Best effort: do not spin on a dead/rejecting host or retain a loading Trip.
+                DiagnosticLog.w("cluster", "Guidance withdrawal outcome=failed generation=${bindingLease?.generation}")
+            }
+        }
+    }
 
     override fun onCreateScreen(intent: Intent): Screen =
         synchronized(ClusterBindingLifecycle.lock) { createScreen(intent) }
@@ -267,7 +302,10 @@ class ClusterMainSession : Session() {
         val navManager = navigationManager ?: return
 
         if (active) {
-            if (ClusterNavigationState.isRouteSuppressed) return
+            if (ClusterNavigationState.isRouteSuppressed) {
+                logAvailability(AvailabilityOutcome.SUPPRESSED)
+                return
+            }
             if (observedRoute != route) {
                 arrivalTimeoutJob?.cancel()
                 arrivalTimeoutJob = null
@@ -277,7 +315,24 @@ class ClusterMainSession : Session() {
                 }
                 observedRoute = route
                 tripOutcomeLogged = false
+                rejectedManeuver = null
             }
+            if (maneuver == null) {
+                rejectedManeuver = null
+                withdrawGuidance(navManager, AvailabilityOutcome.UNAVAILABLE)
+                return
+            }
+            if (maneuver == rejectedManeuver) return
+            // A concrete, buildable instruction is required before claiming host ownership.
+            val trip = try {
+                buildTrip(maneuver)
+            } catch (_: Exception) {
+                if (!isSnapshotCurrent()) return
+                rejectedManeuver = maneuver
+                withdrawGuidance(navManager, AvailabilityOutcome.BUILD_FAILED)
+                return
+            }
+            if (!isSnapshotCurrent()) return
             when (navigationLifecycle.onRouteAvailable()) {
                 ClusterNavigationLifecyclePolicy.Action.NONE -> return
                 ClusterNavigationLifecyclePolicy.Action.START_AND_UPDATE -> {
@@ -290,6 +345,7 @@ class ClusterMainSession : Session() {
                         )
                     } catch (e: Exception) {
                         navigationLifecycle.onNavigationStartFailed()
+                        logAvailability(AvailabilityOutcome.START_FAILED)
                         Log.e(TAG, "navigationStarted() failed: ${e.message}")
                         DiagnosticLog.e(
                             "cluster",
@@ -304,24 +360,24 @@ class ClusterMainSession : Session() {
 
             try {
                 if (!isSnapshotCurrent()) return
-                val trip = if (maneuver != null) buildTrip(maneuver) else Trip.Builder().setLoading(true).build()
-                if (!isSnapshotCurrent()) return
                 navManager.updateTrip(trip)
+                if (!isSnapshotCurrent()) return
+                rejectedManeuver = null
+                logAvailability(AvailabilityOutcome.AVAILABLE)
                 if (!tripOutcomeLogged) {
                     tripOutcomeLogged = true
                     DiagnosticLog.i(
                         "cluster",
                         "Trip update outcome=sent generation=${bindingLease?.generation} " +
-                            "maneuver=${maneuver?.type ?: "loading"}",
+                            "maneuver=${maneuver.type}",
                     )
                 }
-                DiagnosticLog.d("cluster", "Trip: ${maneuver?.type ?: "loading"} distanceReported=${maneuver?.distanceMeters != null} lanes=${maneuver?.lanes?.size ?: 0}")
-            } catch (e: Exception) {
-                Log.e(TAG, "updateTrip() failed: ${e.message}")
-                DiagnosticLog.e(
-                    "cluster",
-                    "Trip update outcome=failed generation=${bindingLease?.generation} error=${e.message}",
-                )
+                DiagnosticLog.d("cluster", "Trip: ${maneuver.type} distanceReported=${maneuver.distanceMeters != null} lanes=${maneuver.lanes?.size ?: 0}")
+            } catch (_: Exception) {
+                if (!isSnapshotCurrent()) return
+                rejectedManeuver = maneuver
+                withdrawGuidance(navManager, AvailabilityOutcome.UPDATE_FAILED)
+                return
             }
 
             if (!isSnapshotCurrent()) return
@@ -357,6 +413,8 @@ class ClusterMainSession : Session() {
                 arrivalTimeoutJob = null
             }
         } else {
+            rejectedManeuver = null
+            logAvailability(AvailabilityOutcome.IDLE)
             arrivalTimeoutJob?.cancel()
             arrivalTimeoutJob = null
             if (navigationLifecycle.onRouteCleared() ==

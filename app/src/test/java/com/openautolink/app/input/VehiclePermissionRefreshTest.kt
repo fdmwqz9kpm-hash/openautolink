@@ -11,11 +11,11 @@ import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
 
 class VehiclePermissionRefreshTest {
-    class Value(private val id: Int, private val value: Any?, private val timestamp: Long = 100) {
+    class Value(private val id: Int, private val value: Any?, private val timestamp: Long = 100, private val status: Int = 0) {
         fun getPropertyId() = id
         fun getValue() = value
         fun getTimestamp() = timestamp
-        fun getStatus() = 0
+        fun getStatus() = status
     }
     class Manager {
         val subscriptions = CopyOnWriteArrayList<Int>()
@@ -23,6 +23,7 @@ class VehiclePermissionRefreshTest {
         @Volatile var accept = true
         @Volatile var exposed = setOf(GEAR, BATTERY, RANGE, CAPACITY)
         @Volatile var failStatic = false
+        @Volatile var staticStatus = 0
         @Volatile var missingYear = false
         @Volatile var unavailableInitialValues = emptySet<Int>()
         val yearReads = CopyOnWriteArrayList<Int>()
@@ -48,7 +49,7 @@ class VehiclePermissionRefreshTest {
             0x11410105 -> intArrayOf(10)
             0x11410107 -> intArrayOf(1, 6)
             else -> "GM"
-        })
+        }, status = if (id !in setOf(GEAR, BATTERY, RANGE, CAPACITY)) staticStatus else 0)
         }
         fun subscribePropertyEvents(id: Int, rate: Float, callback: Callback): Boolean {
             subscriptions.add(id)
@@ -481,6 +482,36 @@ class VehiclePermissionRefreshTest {
         x.f.stop()
         x.await { x.manager.retired }
         assertTrue("unsubscribe must permit callback thread to finish", x.manager.retirementCallbackFinished)
+    }
+
+    @Test fun revokedInfoPermissionDoesNotExposeCachedIdentityToNewLinks() {
+        val x = Fixture()
+        x.request()
+        x.await { x.f.latestVehicleData.value.carYear == "2024" }
+        try {
+            x.info = false; x.request()
+            x.await { !(x.field("startInFlight").get(x.f) as Boolean) }
+            val data = x.f.latestVehicleData.value
+            assertNull(data.carMake); assertNull(data.carModel); assertNull(data.carYear)
+            assertNull(data.fuelTypes); assertNull(data.evConnectorTypes)
+        } finally { x.f.stop() }
+    }
+
+    @Test fun unavailableStaticValuesAreNotCachedAsVehicleIdentity() {
+        val x = Fixture()
+        x.manager.staticStatus = 1
+        x.request()
+        x.await { !(x.field("startInFlight").get(x.f) as Boolean) }
+        try {
+            assertNull(x.f.latestVehicleData.value.carMake)
+            assertNull(x.f.latestVehicleData.value.carModel)
+            assertNull(x.f.latestVehicleData.value.carYear)
+            assertNull(x.f.latestVehicleData.value.fuelTypes)
+            assertNull(x.f.latestVehicleData.value.evConnectorTypes)
+            x.manager.staticStatus = 0
+            x.request()
+            x.await { x.f.latestVehicleData.value.carYear == "2024" }
+        } finally { x.f.stop() }
     }
 
     @Test fun transientStaticFailureRetainsGoodFieldsThenRecoversOnlyMissingFields() {

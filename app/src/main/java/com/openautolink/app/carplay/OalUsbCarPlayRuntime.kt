@@ -36,6 +36,7 @@ class OalUsbCarPlayRuntime(
     private val onReplacementAccepted: (UsbDevice) -> Boolean = { false },
     private val initialPermissionOwner: () -> Boolean = { true },
     private val consumeExplicitPermissionRetry: () -> Boolean = { false },
+    private val restrictionPolicy: CarPlayRestrictionPolicy = CarPlayRestrictionPolicy.from(com.openautolink.app.data.CarPlaySettings()),
 ) : CarPlayRuntime {
     private val canceled=AtomicBoolean()
     private val resourcesLock=Any()
@@ -340,18 +341,17 @@ class OalUsbCarPlayRuntime(
         val gps=context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED &&
             runCatching { context.getSystemService(LocationManager::class.java)?.isProviderEnabled(LocationManager.GPS_PROVIDER)==true }.getOrDefault(false)
         val vehicle=OalCarPlayVehicleSnapshotAdapter()
-        val snapshot=vehicle.snapshot(::status)
-        val capabilities=com.openautolink.carplaylab.intake.OalCarDataCapabilities(gps,snapshot?.rangeKm!=null,
-            snapshot?.currentChargeWh!=null,snapshot?.maxChargeWh!=null)
+        val capabilities=vehicle.capabilities(gps,::status)
         val vehicleBootstrap=own { com.openautolink.carplaylab.intake.OalCarDataBootstrap(capabilities,SystemClock::elapsedRealtime,::status) }
         val identification=Iap2IdentificationConfig("OpenAutoLink","OAL-native-CarPlay","OpenAutoLink",
             "oal-private-receiver","0.1","Android",function.data.id,externalAccessoryProtocol="com.openautolink.carplaylab")
         val projection=ownReceiver { ProjectionReceiver(context,identity,surface,auth,display,trustedOnly=true,
             runtimeCarDataFactory={ session,send,receipt ->
-                vehicleBootstrap.wrap(OalCarPlayIntakeLink(gps,vehicle,OalCarPlayGnssSnapshotAdapter(SystemClock::elapsedRealtime) {
+                vehicleBootstrap.wrap(OalCarPlayIntakeLink(gps,vehicle,OalCarPlayGnssSnapshotAdapter(SystemClock::elapsedRealtime, requireSourceTime = true) {
                     sink -> GnssForwarderImpl(context.applicationContext,sink,true)
                 },SystemClock::elapsedRealtime,CarPlayAppearanceBridge(),session::setNightModeIfEventReady,send,receipt,
-                    frozenCapabilities=capabilities))
+                    frozenCapabilities=capabilities, restrictionPolicy = restrictionPolicy,
+                    sendLimitedUI = session::setLimitedUIIfEventReady))
             },runtimeMetadataFactory={ session, receipt -> own {
                 active()
                 val metadata = OalCarPlayMetadataLink(SystemClock::elapsedRealtime, receipt,
@@ -364,7 +364,7 @@ class OalUsbCarPlayRuntime(
                             ?.carBluetoothConnectionObserver?.subscribeEvidence(listener)
                     }.getOrNull()
                 }, receipt)
-            } },wired=true,onStatus=::status) }
+            } },wired=true,drivingRestrictions = restrictionPolicy.enabled,onStatus=::status) }
         active();onDisplayQualified(projection.displayConfiguration)
         projection.setNetworkStartupDiagnosticStop(ncm::stopStartupDiagnostics)
         val scale=com.openautolink.carplaylab.media.CarPlayDisplayPolicy.scaleDiagnostic(projection.displayConfiguration)

@@ -20,7 +20,8 @@ class OalCarDataBootstrap(
     @Synchronized fun identification(base: Iap2Frame): Iap2Frame {
         if (!offerReported) {
             offerReported=true
-            runCatching {receipt("carplay-car-data-offer location=${capabilities.location} range=${capabilities.range} current=${capabilities.currentEnergy} maximum=${capabilities.maximumEnergy}")}
+            runCatching {receipt("carplay-car-data-offer location=${capabilities.location} range=${capabilities.range} current=${capabilities.currentEnergy} maximum=${capabilities.maximumEnergy}" +
+                if (capabilities.outsideTemperature) " temperature=true" else "")}
         }
         return OalCarDataIdentification.apply(base,capabilities)
     }

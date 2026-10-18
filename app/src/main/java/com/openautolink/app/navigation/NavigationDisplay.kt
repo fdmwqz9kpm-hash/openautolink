@@ -39,7 +39,10 @@ data class ManeuverState(
     val timeToArrivalSeconds: Long? = null,
     val destDistanceMeters: Int? = null,
     val destDistanceDisplay: String? = null,
-    val destDistanceUnit: String? = null
+    val destDistanceUnit: String? = null,
+    // Raw AA field, retained without sign/unit conversion. Do not pass to
+    // AndroidX until the producer's circulation-degree semantics are proven.
+    val roundaboutExitAngle: Int? = null
 )
 
 data class LaneInfo(val directions: List<LaneDirectionInfo>)
@@ -90,5 +93,12 @@ enum class ManeuverType {
     DESTINATION_RIGHT,
     FERRY,
     FERRY_TRAIN,
-    NAME_CHANGE
+    NAME_CHANGE,
+    // Explicit circulation is available from CarPlay driving side. AA's generic
+    // enter/exit vocabulary does not carry it and must not silently imply CCW.
+    ROUNDABOUT_ENTER_CW,
+    ROUNDABOUT_ENTER_CCW,
+    ROUNDABOUT_EXIT_CW,
+    ROUNDABOUT_EXIT_CCW,
+    ROUNDABOUT_ENTER_AND_EXIT
 }
