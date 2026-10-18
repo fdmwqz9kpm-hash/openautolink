@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — combined cluster and vehicle-data candidate
+
+### Cluster guidance and maneuver coverage
+- Withdraw unavailable guidance instead of sending a loading Trip that GM labels “Rerouting”; retain source-route identity so a later usable instruction can restart guidance. Preserve deliberate host stop, arrival and generation ownership boundaries.
+- Retain CarPlay's selected maneuver across omitted-current route deltas and quiet intervals within the finite route lifetime. Explicit empty selection, route replacement, stop and arrival still invalidate guidance. Expire dynamic estimates independently rather than letting unrelated fields renew them.
+- Apply AndroidX roundabout constraints by maneuver family: generic entry/exit cannot carry an exit ordinal; combined types require a sourced positive ordinal. Unsupported direction or geometry does not become an invented left turn, straight arrow or exit 1.
+- Expand original directional vector coverage and legacy Android Auto ferry/roundabout mapping; clear old turn artwork and maneuver-only fields when a new turn arrives while preserving distance-only delta behavior.
+
+### Vehicle metadata, GPS and optional CarPlay restrictions
+- Supply source-qualified vehicle identity, connector metadata and outside temperature through the existing production adapters. Retain missing/unsupported outcomes; do not invent EV profiles, capacities or charging powers.
+- Keep GPS provider/source timestamps and freshness distinct from forwarding time. Physical phone GPS-source selection remains unverified.
+- Add independently saved, default-OFF vehicle-based CarPlay UI restrictions and a separate default-OFF Always in Park override. Missing/stale gear stays restricted unless the explicit override is enabled. Neither option changes actual gear, Android Auto policy or video permission.
+- Use the same observation receipt sample for gear status authority, avoiding a second clock sample invalidating an otherwise valid observation.
+
+### Qualification status
+- This is an unreleased source candidate, not a claim that the reported vehicle failures are resolved. Combined source review, compilation, executable regression tests, real Android vector rendering, native packaging and physical cluster acceptance remain pending.
+- No companion behavior changes. No release version has been allocated; publication remains blocked by the owner's resource/build hold.
+
 ## 0.1.530
 
 ### Multiple iPhones with CarPlay

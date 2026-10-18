@@ -45,6 +45,9 @@ android {
         versionName = (findProperty("oalVersionName") as? String) ?: "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Explicit lab opt-in; never infer a safety feature from a tablet/AA override.
+        buildConfigField("boolean", "CARPLAY_DRIVING_RESTRICTIONS",
+            (providers.gradleProperty("oalCarPlayDrivingRestrictions").orNull == "true").toString())
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

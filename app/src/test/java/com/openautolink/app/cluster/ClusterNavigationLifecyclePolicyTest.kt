@@ -81,6 +81,43 @@ class ClusterNavigationLifecyclePolicyTest {
     }
 
     @Test
+    fun unavailableGuidanceEndsDisplayWithoutSuppressingSameRoute() {
+        val policy = ClusterNavigationLifecyclePolicy()
+        policy.onRouteAvailable()
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.END, policy.onGuidanceUnavailable())
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.NONE, policy.onGuidanceUnavailable())
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.START_AND_UPDATE, policy.onRouteAvailable())
+    }
+
+    @Test
+    fun initiallyUnavailableGuidanceDoesNotClaimOwnership() {
+        val policy = ClusterNavigationLifecyclePolicy()
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.NONE, policy.onGuidanceUnavailable())
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.START_AND_UPDATE, policy.onRouteAvailable())
+    }
+
+    @Test
+    fun unavailabilityCannotUndoHostSuppression() {
+        val policy = ClusterNavigationLifecyclePolicy()
+        policy.onRouteAvailable()
+        policy.onHostStop()
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.NONE, policy.onGuidanceUnavailable())
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.NONE, policy.onRouteAvailable())
+        policy.onRouteCleared()
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.START_AND_UPDATE, policy.onRouteAvailable())
+    }
+
+    @Test
+    fun hostStopWhileUnavailableRemainsSuppressedUntilClear() {
+        val policy = ClusterNavigationLifecyclePolicy()
+        policy.onHostStop()
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.NONE, policy.onGuidanceUnavailable())
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.NONE, policy.onRouteAvailable())
+        policy.onRouteCleared()
+        assertEquals(ClusterNavigationLifecyclePolicy.Action.START_AND_UPDATE, policy.onRouteAvailable())
+    }
+
+    @Test
     fun failedNavigationStartAllowsNextUpdateToRetryStart() {
         val policy = ClusterNavigationLifecyclePolicy()
         policy.onRouteAvailable()

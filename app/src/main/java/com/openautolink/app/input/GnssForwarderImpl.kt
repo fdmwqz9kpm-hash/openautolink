@@ -31,10 +31,11 @@ class GnssForwarderImpl(
 
     private var nmeaListener: OnNmeaMessageListener? = null
     private var providerListener: LocationListener? = null
+    @Volatile private var generation = 0L
     private val locationManager: LocationManager? =
         context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
 
-    override var isActive: Boolean = false
+    @Volatile override var isActive: Boolean = false
         private set
 
     @SuppressLint("MissingPermission")
@@ -53,12 +54,18 @@ class GnssForwarderImpl(
             return
         }
 
-        val listener = OnNmeaMessageListener { nmea, _ ->
+        val ownerGeneration = ++generation
+        val listener = OnNmeaMessageListener { nmea, fixUnixMs ->
             // Only forward standard GPS sentences
-            if (isActive && (nmea.startsWith("\$GP") || nmea.startsWith("\$GN") || nmea.startsWith("\$GL"))) {
+            if (isActive && ownerGeneration == generation &&
+                (nmea.startsWith("\$GP") || nmea.startsWith("\$GN") || nmea.startsWith("\$GL"))) {
                 val trimmed = nmea.trimEnd('\r', '\n')
                 if (trimmed.isNotEmpty()) {
-                    sendMessage(ControlMessage.Gnss(trimmed))
+                    // Android documents chipset fix time as Unix ms, NOT elapsedRealtime.
+                    // Keep AA's existing message path; qualify real CarPlay source time downstream.
+                    sendMessage(if (activateProvider) ControlMessage.Gnss(trimmed, fixUnixMs,
+                        System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+                        else ControlMessage.Gnss(trimmed))
                 }
             }
         }
@@ -87,6 +94,7 @@ class GnssForwarderImpl(
 
     @Synchronized
     override fun stop() {
+        generation++ // Fence queued callbacks even when the same object starts another registration.
         isActive = false
         var failure: RuntimeException? = null
         nmeaListener?.let { listener ->

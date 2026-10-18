@@ -56,6 +56,7 @@ class CarPlayRuntimeConfig(
     val networkFamily: String = "auto",
     val apSecurity: String = "wpa2",
     val localAddress: String = "",
+    val restrictionPolicy: CarPlayRestrictionPolicy = CarPlayRestrictionPolicy.from(com.openautolink.app.data.CarPlaySettings()),
 )
 
 /** Actual OAL Surface adapter for the copied receiver. There is no Activity/Intent bootstrap.
@@ -302,10 +303,12 @@ class OalCarPlayRuntime(
                 val qualifiedGps = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
                     runCatching { context.getSystemService(LocationManager::class.java)?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true }.getOrDefault(false)
                 OalCarPlayIntakeLink(qualifiedGps, OalCarPlayVehicleSnapshotAdapter(),
-                    OalCarPlayGnssSnapshotAdapter(SystemClock::elapsedRealtime) { sink ->
+                    OalCarPlayGnssSnapshotAdapter(SystemClock::elapsedRealtime, requireSourceTime = true) { sink ->
                         GnssForwarderImpl(context.applicationContext, sink, true)
                     }, SystemClock::elapsedRealtime, CarPlayAppearanceBridge(),
-                    session::setNightModeIfEventReady, send, receipt)
+                    session::setNightModeIfEventReady, send, receipt,
+                    restrictionPolicy = config.restrictionPolicy,
+                    sendLimitedUI = session::setLimitedUIIfEventReady)
             }, runtimeMetadataFactory = { session, receipt -> own {
                 active()
                 val metadata = OalCarPlayMetadataLink(SystemClock::elapsedRealtime, receipt,
@@ -318,7 +321,7 @@ class OalCarPlayRuntime(
                             ?.carBluetoothConnectionObserver?.subscribeEvidence(listener)
                     }.getOrNull()
                 }, receipt)
-            } }, onStatus = ::status) }
+            } }, drivingRestrictions = config.restrictionPolicy.enabled, onStatus = ::status) }
         // Log the actual decoder-qualified offer, not an earlier requested preset or coded viewport.
         active()
         onDisplayQualified(projection.displayConfiguration)

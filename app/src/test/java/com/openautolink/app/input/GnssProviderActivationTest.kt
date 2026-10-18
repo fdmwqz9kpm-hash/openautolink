@@ -56,4 +56,21 @@ class GnssProviderActivationTest {
         verify(exactly=1) {manager.removeUpdates(captor.captured)}
         verify(exactly=1) {manager.removeNmeaListener(any<OnNmeaMessageListener>())}
     }
+    @Test fun retiredProviderCallbacksCannotSupplyNmeaAfterSameSourceRestarts() {
+        val (context,manager)=fixture()
+        val listeners=mutableListOf<OnNmeaMessageListener>()
+        every {manager.addNmeaListener(capture(listeners),any<Handler>())} returns true
+        val messages=mutableListOf<ControlMessage.Gnss>()
+        val source=GnssForwarderImpl(context,{messages+=it},true)
+        source.start();source.stop();source.start()
+        val sentence="\$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47"
+        listeners[0].onNmeaMessage(sentence,123L)
+        assertTrue("retired callback must not be restamped as a fresh source",messages.isEmpty())
+        listeners[1].onNmeaMessage(sentence,124L)
+        assertEquals(listOf(sentence),messages.map {it.nmea})
+        assertEquals(124L,messages.single().fixUnixMs)
+        assertNotNull(messages.single().receivedUnixMs)
+        assertNotNull(messages.single().receivedElapsedMs)
+        source.stop()
+    }
 }

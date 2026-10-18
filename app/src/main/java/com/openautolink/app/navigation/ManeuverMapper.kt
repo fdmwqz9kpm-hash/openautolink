@@ -9,8 +9,9 @@ object ManeuverMapper {
 
     /**
      * Map a maneuver string from the bridge to a ManeuverType.
-     * Handles various formats: snake_case from OAL protocol and
-     * numeric codes from aasdk's TurnEvent.
+     * Handles normalized names emitted by both native AA wire vocabularies.
+     * Bare numeric codes are intentionally not accepted: legacy and modern
+     * enum namespaces reuse numbers for different maneuvers.
      */
     fun fromWire(maneuver: String?): ManeuverType {
         if (maneuver == null) return ManeuverType.UNKNOWN
@@ -20,7 +21,7 @@ object ManeuverMapper {
             "depart" -> ManeuverType.DEPART
             "straight", "head", "continue" -> ManeuverType.STRAIGHT
             "turn_slight_left", "slight_left", "slight_turn_left" -> ManeuverType.TURN_SLIGHT_LEFT
-            "turn_left", "left", "turn" -> ManeuverType.TURN_LEFT
+            "turn_left", "left" -> ManeuverType.TURN_LEFT
             "turn_sharp_left", "sharp_left", "sharp_turn_left" -> ManeuverType.TURN_SHARP_LEFT
             "turn_slight_right", "slight_right", "slight_turn_right" -> ManeuverType.TURN_SLIGHT_RIGHT
             "turn_right", "right" -> ManeuverType.TURN_RIGHT
@@ -48,6 +49,17 @@ object ManeuverMapper {
             "off_ramp_slight_right" -> ManeuverType.OFF_RAMP_SLIGHT_RIGHT
             "roundabout_enter", "roundabout" -> ManeuverType.ROUNDABOUT_ENTER
             "roundabout_exit" -> ManeuverType.ROUNDABOUT_EXIT
+            "roundabout_enter_cw" -> ManeuverType.ROUNDABOUT_ENTER_CW
+            "roundabout_enter_ccw" -> ManeuverType.ROUNDABOUT_ENTER_CCW
+            "roundabout_exit_cw" -> ManeuverType.ROUNDABOUT_EXIT_CW
+            "roundabout_exit_ccw" -> ManeuverType.ROUNDABOUT_EXIT_CCW
+            // Legacy TurnSide is not a circulation enum. Even a side suffix
+            // cannot establish CW/CCW; preserve the generic instruction only.
+            "roundabout_enter_and_exit", "roundabout_enter_and_exit_left",
+            "roundabout_enter_and_exit_right" -> ManeuverType.ROUNDABOUT_ENTER_AND_EXIT
+            // Preserve representable ordinal semantics until the AA angle's
+            // unit/reference convention is proven. The raw source angle is
+            // retained in ManeuverState, not guessed from a name or ordinal.
             "roundabout_enter_and_exit_cw",
             "roundabout_enter_and_exit_cw_with_angle" -> ManeuverType.ROUNDABOUT_ENTER_AND_EXIT_CW
             "roundabout_enter_and_exit_ccw",
@@ -79,7 +91,8 @@ object ManeuverMapper {
         ManeuverType.U_TURN_RIGHT -> "⤻"
         ManeuverType.KEEP_LEFT -> "↖"
         ManeuverType.KEEP_RIGHT -> "↗"
-        ManeuverType.MERGE_LEFT, ManeuverType.MERGE_UNSPECIFIED -> "↰"
+        ManeuverType.MERGE_LEFT -> "↰"
+        ManeuverType.MERGE_UNSPECIFIED -> "•"
         ManeuverType.MERGE_RIGHT -> "↱"
         ManeuverType.FORK_LEFT -> "⑂"
         ManeuverType.FORK_RIGHT -> "⑂"
@@ -90,8 +103,11 @@ object ManeuverMapper {
         ManeuverType.OFF_RAMP_LEFT, ManeuverType.OFF_RAMP_SLIGHT_LEFT -> "↰"
         ManeuverType.OFF_RAMP_RIGHT, ManeuverType.OFF_RAMP_SLIGHT_RIGHT -> "↱"
         ManeuverType.ROUNDABOUT_ENTER, ManeuverType.ROUNDABOUT_EXIT,
-        ManeuverType.ROUNDABOUT_ENTER_AND_EXIT_CW,
-        ManeuverType.ROUNDABOUT_ENTER_AND_EXIT_CCW -> "↻"
+        ManeuverType.ROUNDABOUT_ENTER_AND_EXIT -> "○"
+        ManeuverType.ROUNDABOUT_ENTER_CW, ManeuverType.ROUNDABOUT_EXIT_CW,
+        ManeuverType.ROUNDABOUT_ENTER_AND_EXIT_CW -> "↻"
+        ManeuverType.ROUNDABOUT_ENTER_CCW, ManeuverType.ROUNDABOUT_EXIT_CCW,
+        ManeuverType.ROUNDABOUT_ENTER_AND_EXIT_CCW -> "↺"
         ManeuverType.DESTINATION, ManeuverType.DESTINATION_STRAIGHT,
         ManeuverType.DESTINATION_LEFT, ManeuverType.DESTINATION_RIGHT -> "⚑"
         ManeuverType.DEPART -> "▶"

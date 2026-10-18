@@ -34,7 +34,7 @@ class OalCarPlayMetadataHostTest {
         } finally { host.close(); ClusterNavigationState.clear(); unmockkAll() }
     }
 
-    @Test fun productionIntakeRecoversClusterAfterStaleGapWithoutReplacingRouteOrHostSuppression() {
+    @Test fun productionIntakeRetainsQuietSelectionAcrossDeltaGapWithoutReplacingRouteOrHostSuppression() {
         var now = 0L
         val intake = com.openautolink.carplaylab.metadata.CarPlayMetadataIntake { now }.apply { authenticate() }
         val host = OalCarPlayMetadataHost(mockk<Context>())
@@ -50,13 +50,17 @@ class OalCarPlayMetadataHostTest {
             val demand = ClusterNavigationState.recoveryDemand.value
             assertNotNull(demand)
             now = 30_110; intake.tick(); publish()
-            assertNull(ClusterNavigationState.state.value)
+            assertNotNull("quiet selection must not flicker in real host publication", ClusterNavigationState.state.value)
+            assertNull(ClusterNavigationState.state.value?.distanceMeters)
             assertTrue(ClusterNavigationState.isActive)
             assertEquals(demand, ClusterNavigationState.recoveryDemand.value)
-            now = 56_000; select(); publish()
-            assertNotNull("real intake and host must restore the cluster turn from ID alone", ClusterNavigationState.state.value)
+            now = 56_000
+            intake.handle(com.shilapi.xcertplay.iap2.message.Iap2Messages.buildRaw(0x5201) { u8(1,1); u32(10,99) })
+            publish()
+            assertNotNull("real intake and host must retain turn on omitted-current delta", ClusterNavigationState.state.value)
+            assertEquals(99, ClusterNavigationState.state.value?.distanceMeters)
             assertEquals(demand, ClusterNavigationState.recoveryDemand.value)
-            assertNull(intake.navigation?.distanceMeters)
+            assertEquals(99, intake.navigation?.distanceMeters)
             ClusterNavigationState.suppressCurrentRoute()
             now = 86_000; intake.tick(); publish()
             now = 112_000; select(); publish()

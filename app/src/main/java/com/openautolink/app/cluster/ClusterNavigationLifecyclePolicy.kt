@@ -33,8 +33,18 @@ internal class ClusterNavigationLifecyclePolicy {
         }
     }
 
+    /** Withdraw the displayed Trip, not the source route or its suppression state. */
+    fun onGuidanceUnavailable(): Action = when (state) {
+        State.NAVIGATING -> {
+            state = State.IDLE
+            Action.END
+        }
+        State.IDLE, State.SUPPRESSED_UNTIL_CLEAR -> Action.NONE
+    }
+
     fun onHostStop() {
-        if (state == State.NAVIGATING) state = State.SUPPRESSED_UNTIL_CLEAR
+        // A host stop can arrive while a live source route has no usable instruction.
+        state = State.SUPPRESSED_UNTIL_CLEAR
     }
 
     fun onNavigationStartFailed() {

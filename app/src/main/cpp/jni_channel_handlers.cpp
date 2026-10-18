@@ -402,12 +402,16 @@ void JniNavStatusHandler::onTurnEvent(
             case 7: maneuver = "on_ramp" + side; break;
             case 8: maneuver = "off_ramp" + side; break;
             case 9: maneuver = "fork" + side; break;
-            case 10: maneuver = "merge" + side; break;
+            case 10: maneuver = side.empty() ? "merge_unspecified" : "merge" + side; break;
             case 11: maneuver = "roundabout_enter"; break;
             case 12: maneuver = "roundabout_exit"; break;
+            // TurnSide does not specify roundabout circulation. Keep this
+            // generic rather than manufacture a CW/CCW suffix from turn side.
             case 13: maneuver = "roundabout_enter_and_exit"; break;
             case 14: maneuver = "straight"; break;
-            case 19: maneuver = "destination"; break;
+            case 16: maneuver = "ferry"; break;
+            case 17: maneuver = "ferry_train"; break;
+            case 19: maneuver = "destination" + side; break;
             default: maneuver = "turn_" + std::to_string(ev) + side; break;
         }
     }
@@ -421,7 +425,13 @@ void JniNavStatusHandler::onTurnEvent(
     }
 
     LOGI("Nav turn: %s road=%s icon=%zu", maneuver.c_str(), road.c_str(), iconSize);
-    session_.dispatchNavTurn(maneuver, road, iconData, iconSize);
+    // Reuse the existing full-state callback to retain the legacy sourced
+    // ordinal. No JNI/aasdk contract extension and no fabricated exit/angle.
+    const int exitNumber = turnEvent.has_turn_number() ? turnEvent.turn_number() : -1;
+    session_.dispatchNavFullState(
+        maneuver, road, iconData, iconSize,
+        -1, -1, "", "", "", "", exitNumber,
+        "", "", "", -1, -1, "", "");
 
     channel_->receive(shared_from_this());
 }

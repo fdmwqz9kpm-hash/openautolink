@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original OAL navigation line art; fixed geography must not auto-mirror in RTL. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="64dp" android:height="64dp" android:viewportWidth="64" android:viewportHeight="64">
+  <group android:scaleX="-1" android:pivotX="32">
+    <path android:pathData="M20,56 L20,24 L8,24 M16,16 L8,24 L16,32" android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFF" android:strokeAlpha="1" android:strokeWidth="5" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:pathData="M38,56 L38,10 L56,10 L56,28 L38,28" android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFF" android:strokeAlpha="1" android:strokeWidth="5" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+  </group>
+</vector>

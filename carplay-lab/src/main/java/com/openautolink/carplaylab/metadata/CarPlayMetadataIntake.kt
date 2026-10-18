@@ -50,42 +50,48 @@ class CarPlayMetadataIntake(private val elapsedMs: () -> Long) {
     private val maneuvers = LinkedHashMap<Int, Maneuver>()
     private var route = false
     private var index: Int? = null
-    private var distance: Int? = null
-    private var road: String? = null
-    private var seconds: Long? = null
-    private var meters: Int? = null
+    private data class Estimate<T>(val value: T, val receivedMs: Long)
+    private var distance: Estimate<Int>? = null
+    private var road: Estimate<String>? = null
+    private var seconds: Estimate<Long>? = null
+    private var meters: Estimate<Int>? = null
     private var lastRoute: Long? = null
-    private var instructionExpired = false
     var navigation: CarPlayNavigationMetadata? = null
         private set
     private companion object {
-        const val INSTRUCTION_STALE_MS = 30_000L
+        // Local estimate freshness, not an Apple instruction/selection timeout.
+        const val ESTIMATE_STALE_MS = 30_000L
         // Local finite ownership grace, not an Apple protocol timeout.
         const val ROUTE_EXPIRES_MS = 120_000L
     }
     @Synchronized fun tick() {
-        val age = lastRoute?.let { elapsedMs() - it } ?: return
+        val now = elapsedMs()
+        val age = lastRoute?.let { now - it } ?: return
         val before = navigation
         if (retired || age >= ROUTE_EXPIRES_MS) {
             clearRoute()
             observe("lifecycle", "cleared", before, reason = if (retired) "revoke" else "expired")
-        } else if (age >= INSTRUCTION_STALE_MS) {
-            // Definitions belong to the route's 120s lifetime, not the selected
-            // instruction's 30s freshness window. Pending estimates can also age
-            // out while selection remains expired, so clear them on every crossing.
-            val firstExpiry = !instructionExpired
-            navigation = null; instructionExpired = true
-            distance = null; road = null; seconds = null; meters = null
-            if (firstExpiry) observe("lifecycle", "cleared", before, reason = "stale")
+        } else {
+            // A selected maneuver is a route-scoped definition, not a periodic
+            // heartbeat. Age dynamic values independently; an omitted estimate
+            // must not be renewed by another field or by an explicit current ID.
+            distance = distance?.takeIf { now - it.receivedMs < ESTIMATE_STALE_MS }
+            road = road?.takeIf { now - it.receivedMs < ESTIMATE_STALE_MS }
+            seconds = seconds?.takeIf { now - it.receivedMs < ESTIMATE_STALE_MS }
+            meters = meters?.takeIf { now - it.receivedMs < ESTIMATE_STALE_MS }
+            publishRoute()
         }
     }
+    private fun clearEstimates() {
+        distance = null; road = null; seconds = null; meters = null
+    }
     private fun clearRoute() {
-        route = false; index = null; distance = null; road = null; seconds = null; meters = null
-        lastRoute = null; maneuvers.clear(); navigation = null; instructionExpired = false
+        route = false; index = null; clearEstimates()
+        lastRoute = null; maneuvers.clear(); navigation = null
     }
     private fun publishRoute() {
         val m = maneuvers[index]
-        navigation = if (route && !instructionExpired && m != null && lastRoute?.let { elapsedMs() - it < INSTRUCTION_STALE_MS } == true) CarPlayNavigationMetadata(m.type,m.side,distance,m.road ?: road,seconds,meters,m.junction,m.exitAngle,m.angles) else null
+        navigation = if (route && m != null && lastRoute?.let { elapsedMs() - it < ROUTE_EXPIRES_MS } == true) CarPlayNavigationMetadata(m.type,m.side,distance?.value,m.road ?: road?.value,seconds?.value,meters?.value,m.junction,m.exitAngle,m.angles) else null
     }
     private fun navigationFrame(frame: Iap2Frame) {
         val b = Iap2BodyReader.of(frame)
@@ -122,17 +128,26 @@ class CarPlayMetadataIntake(private val elapsedMs: () -> Long) {
             // omitted-field inheritance against the post-expiry state, not old data.
             tick()
             if (state == 0 || state == 2) { clearRoute(); return }
-            if (current != null) index = current.firstOrNull()
+            // accessoryd24A446 @0x100002c64-0x100002c8c omits TLV13
+            // for an absent dictionary key; a present empty array is a distinct
+            // empty TLV (_iAP2MsgAddCFU16ArrayParam @0x1000040d0).
+            // Pinned DiPlay e2fd8ead BydHudRouteState:121-162 retains activeIndex
+            // on omission. Never replace that protocol delta with a 30s ID TTL.
+            if (current != null) {
+                val selected = current.firstOrNull()
+                if (selected != index || selected == null) clearEstimates()
+                index = selected
+            }
             if (state != null || current?.isNotEmpty() == true) {
                 if (!route) routeEpoch++
                 route = true
             }
-            road = if (b.has(3)) name else road
-            distance = nextDistance ?: distance; seconds = nextSeconds ?: seconds; meters = nextMeters ?: meters
-            lastRoute = elapsedMs()
-            // After staleness, neither details nor an absent-current delta confirms
-            // that the old selection is still current. Require an explicit selection.
-            if (current != null) instructionExpired = false
+            val now = elapsedMs()
+            if (b.has(3)) road = name?.let { Estimate(it, now) }
+            if (nextDistance != null) distance = Estimate(nextDistance, now)
+            if (nextSeconds != null) seconds = Estimate(nextSeconds, now)
+            if (nextMeters != null) meters = Estimate(nextMeters, now)
+            if (route) lastRoute = now
         }
         publishRoute()
     }

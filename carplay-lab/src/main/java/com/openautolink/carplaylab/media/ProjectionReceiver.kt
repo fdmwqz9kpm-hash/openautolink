@@ -37,6 +37,7 @@ class ProjectionReceiver(
     private val runtimeCarDataFactory: ((AirPlaySession, (Iap2Frame) -> Unit, (String) -> Unit) -> RuntimeCarDataLink)? = null,
     private val runtimeMetadataFactory: ((AirPlaySession, (String) -> Unit) -> com.openautolink.carplaylab.metadata.RuntimeMetadataLink)? = null,
     private val wired: Boolean = false,
+    private val drivingRestrictions: Boolean = false,
     private val onStatus: (String) -> Unit,
 ) : Closeable {
     init {
@@ -136,7 +137,8 @@ class ProjectionReceiver(
         }.use { it.readBytes() }))
     private fun sessionConfig(): AirPlayConfig =
         benchReceiverConfig(btMac, port, microphoneCapability, displayConfiguration).copy(
-            hevc = videoSelection.hevcOffered, oemLabel = "OpenAutoLink", icons = oemIcons)
+            hevc = videoSelection.hevcOffered, oemLabel = "OpenAutoLink", icons = oemIcons,
+            drivingRestrictions = drivingRestrictions)
     private val engine = CarPlayMediaEngine(sink, microphoneEnabled = microphoneCapability.available,
         onDiagnostic = { session, message ->
             if (!closed.get() && !admissionRevoked.get() && session in sessions) status(message)
