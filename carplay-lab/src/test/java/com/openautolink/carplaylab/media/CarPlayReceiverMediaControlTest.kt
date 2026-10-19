@@ -63,6 +63,90 @@ class CarPlayReceiverMediaControlTest {
             verify(session).sendMedia(1)
         } finally { receiver.close();assertTrue(receiver.awaitClosed(3000)) }
     }
+    @Test fun liveAssistantPlayForwardsTransportWithoutClaimingMediaGrant() {
+        val lines=CopyOnWriteArrayList<String>(); val receiver=receiver { lines.add(it) }
+        val session=mock(AirPlaySession::class.java);admit(receiver,session)
+        val sink=field(receiver,"sink").get(receiver) as com.shilapi.xcertplay.media.AndroidMediaSink
+        val input=field(receiver,"input").get(receiver) as ExecutorService
+        val statuses=field(receiver,"statuses").get(receiver) as ExecutorService
+        val manager=RuntimeEnvironment.getApplication().getSystemService(android.media.AudioManager::class.java)
+        val shadow=org.robolectric.Shadows.shadowOf(manager)
+        try {
+            shadow.setNextFocusRequestResponse(android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+            sink.onAudioStarted(com.shilapi.xcertplay.airplay.AudioStreamId(100,"speechrecognition"),
+                requireNotNull(com.shilapi.xcertplay.media.AudioOutputSupport.negotiate(0x4000L,100,"speechrecognition")),0)
+            val assistant=shadow.lastAudioFocusRequest
+            shadow.setNextFocusRequestResponse(android.media.AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+            `when`(session.sendMedia(1)).thenReturn(true)
+            assertTrue(command(receiver,session,1));input.submit {}.get(3,TimeUnit.SECONDS)
+            statuses.submit {}.get(3,TimeUnit.SECONDS)
+            verify(session).sendMedia(1)
+            assertSame("no conflicting media request",assistant,shadow.lastAudioFocusRequest)
+            assertTrue(lines.contains("media stage=media-play-disposition result=deferred transport=permitted output=withheld"))
+            assertFalse(lines.contains("media stage=media-focus-recovery reason=user-play result=permitted"))
+        } finally {
+            shadow.setNextFocusRequestResponse(android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+            receiver.close();assertTrue(receiver.awaitClosed(3000))
+        }
+    }
+    @Test fun pendingPlayCannotSurviveStopReplacementOrRevocation() {
+        listOf("stop","replacement","revoke").forEach { cancellation ->
+            val receiver=receiver();val session=mock(AirPlaySession::class.java);admit(receiver,session)
+            val sink=field(receiver,"sink").get(receiver) as com.shilapi.xcertplay.media.AndroidMediaSink
+            val input=field(receiver,"input").get(receiver) as ExecutorService
+            val shadow=org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication().getSystemService(android.media.AudioManager::class.java))
+            fun start(kind: String): com.shilapi.xcertplay.airplay.AudioStreamId {
+                val id=com.shilapi.xcertplay.airplay.AudioStreamId(100,kind)
+                sink.onAudioStarted(id,requireNotNull(com.shilapi.xcertplay.media.AudioOutputSupport.negotiate(0x4000L,100,kind)),0)
+                return id
+            }
+            try {
+                shadow.setNextFocusRequestResponse(android.media.AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+                sink.onAudioStopped(start("media"))
+                shadow.setNextFocusRequestResponse(android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+                val assistant=start("speechrecognition")
+                val last=shadow.lastAudioFocusRequest
+                assertTrue(command(receiver,session,1));input.submit {}.get(3,TimeUnit.SECONDS)
+                verify(session).sendMedia(1)
+                when(cancellation) {
+                    "stop" -> { assertTrue(command(receiver,session,2));input.submit {}.get(3,TimeUnit.SECONDS);verify(session).sendMedia(2) }
+                    "replacement" -> admit(receiver,mock(AirPlaySession::class.java))
+                    "revoke" -> receiver.revokePendingAdmission()
+                }
+                sink.onAudioStopped(assistant)
+                start("media")
+                assertSame("$cancellation must cancel old-session pending permission",last,shadow.lastAudioFocusRequest)
+            } finally { receiver.close();assertTrue(receiver.awaitClosed(3000)) }
+        }
+    }
+    @Test fun stopIngressCancelsPendingAndEarlierQueuedPlayBeforeWorkerDrain() {
+        val receiver=receiver();val session=mock(AirPlaySession::class.java);admit(receiver,session)
+        val sink=field(receiver,"sink").get(receiver) as com.shilapi.xcertplay.media.AndroidMediaSink
+        val input=field(receiver,"input").get(receiver) as ExecutorService
+        val shadow=org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication().getSystemService(android.media.AudioManager::class.java))
+        val entered=CountDownLatch(1);val release=CountDownLatch(1)
+        fun start(kind: String): com.shilapi.xcertplay.airplay.AudioStreamId {
+            val id=com.shilapi.xcertplay.airplay.AudioStreamId(100,kind)
+            sink.onAudioStarted(id,requireNotNull(com.shilapi.xcertplay.media.AudioOutputSupport.negotiate(0x4000L,100,kind)),0)
+            return id
+        }
+        try {
+            shadow.setNextFocusRequestResponse(android.media.AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+            sink.onAudioStopped(start("media"))
+            shadow.setNextFocusRequestResponse(android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+            val assistant=start("speechrecognition");val last=shadow.lastAudioFocusRequest
+            assertTrue(command(receiver,session,1));input.submit {}.get(3,TimeUnit.SECONDS)
+            input.execute { entered.countDown();release.await() };assertTrue(entered.await(3,TimeUnit.SECONDS))
+            assertTrue(command(receiver,session,1))
+            assertTrue(command(receiver,session,2))
+            sink.onAudioStopped(assistant);start("media")
+            assertSame("STOP must cancel before its HID worker can drain",last,shadow.lastAudioFocusRequest)
+            release.countDown();input.submit {}.get(3,TimeUnit.SECONDS)
+            verify(session,times(1)).sendMedia(1)
+            verify(session).sendMedia(2)
+            assertSame("earlier queued PLAY cannot rearm intent after STOP",last,shadow.lastAudioFocusRequest)
+        } finally { release.countDown();receiver.close();assertTrue(receiver.awaitClosed(3000)) }
+    }
     @Test fun queuedCommandCannotReachReplacedOwner() {
         val receiver=receiver();val session=mock(AirPlaySession::class.java);admit(receiver,session)
         val entered=CountDownLatch(1);val release=CountDownLatch(1)
