@@ -62,8 +62,8 @@ class IndependentConnectionUiTest {
         assertTrue(dialog.contains("\${prompt.protocolLabel} for this connection?"))
         listOf("updateDirectTransport", "updateCarPlay", "setDirectTransport", ".launch(", "UsbConnectionManager", "returnToAndroidAuto")
             .forEach { assertFalse(it, dialog.contains(it)) }
-        assertTrue(screen.contains("if (!showSettings && !showDiagnostics && usbHotPlugPrompt == null && !showUsbPicker)"))
-        assertTrue(screen.contains("val showUsbPicker = usbHotPlugPrompt == null && !showCarPlaySafeEditor &&"))
+        assertTrue(screen.contains("!showCarPlaySafeEditor && usbHotPlugPrompt == null && usbSwitchFailure == null) carPlayState.failure"))
+        assertTrue(screen.contains("val showUsbPicker = carPlayState.failure == null && usbHotPlugPrompt == null && !showCarPlaySafeEditor &&"))
         assertTrue(screen.contains("UsbPickerVisibility.shouldShow("))
     }
 

@@ -184,11 +184,11 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /** Wait for exact CarPlay retirement before handing the cable to AA or a new attempt. */
-    private suspend fun releaseCarPlayUsbOwner() {
+    private suspend fun releaseCarPlayUsbOwner(preserveFailure: Boolean = false) {
         if (!_carPlayState.value.selected) return
         kotlinx.coroutines.withTimeout(15_000) {
             kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
-                carPlayCoordinator.returnToAndroidAuto {
+                carPlayCoordinator.returnToAndroidAuto(preserveFailure = preserveFailure) {
                     if (continuation.isActive) continuation.resumeWith(Result.success(Unit))
                 }
             }
@@ -250,6 +250,10 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                             return@launch
                         }
                         if (unifiedUsbManager?.pendingDevice(generation) == null) return@launch
+                        if (presentBlockedUsbCarPlayFailure(device)) {
+                            unifiedUsbManager?.stay(generation)
+                            return@launch
+                        }
                         val busy = usbSwitchPolicy.shouldPrompt(
                             sessionManager.sessionState.value != SessionState.IDLE,
                             synchronized(connectLock) { connectInFlight }, _carPlayState.value.selected)
@@ -366,7 +370,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     },
                     eligible = { protocol ->
                         val saved = preferences.carPlaySettings.first()
-                        if (automatic && usbOverrideGeneration == null && manager.pendingDevice(generation) != null && usbSwitchPolicy.shouldPrompt(
+                        // Revalidate before claiming/retiring projection, including an old Switch dialog.
+                        val blocked = manager.pendingDevice(generation)?.let(::presentBlockedUsbCarPlayFailure) == true
+                        if (!blocked && automatic && usbOverrideGeneration == null && manager.pendingDevice(generation) != null && usbSwitchPolicy.shouldPrompt(
                                 sessionManager.sessionState.value != SessionState.IDLE,
                                 synchronized(connectLock) { connectInFlight }, _carPlayState.value.selected)) {
                             promptInstead = true
@@ -374,13 +380,14 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                                 if (protocol == com.openautolink.app.carplay.UsbHotPlugSwitchPolicy.Protocol.CARPLAY) "CarPlay" else "Android Auto")
                         }
                         !com.openautolink.app.input.IgnitionMonitor.isOffOrLocked() &&
-                            !promptInstead &&
+                            !promptInstead && !blocked &&
                             (protocol == com.openautolink.app.carplay.UsbHotPlugSwitchPolicy.Protocol.ANDROID_AUTO ||
                                 saved.enabled && saved.videoError() == null)
                     },
                     claimed = {
                         // Revoke queued wireless starts BEFORE awaited teardown; never write a preference.
                         usbHandoff.claim(generation)
+                        carPlayCoordinator.dismissFailure()
                         _carPlayStartupGuidance.value = null
                         projectionLaunchPolicy.suppress()
                         usbPolicyEpoch.incrementAndGet()
@@ -427,7 +434,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         try {
             if (dispatchEpoch != usbDispatchEpoch.get()) return
             usbSwitchPolicy.finish(generation,
-                retire = { retireUsbProjection() },
+                retire = { retireUsbProjection(preserveCarPlayFailure = true) },
                 cleared = { clearUsbOverrideState() },
                 restore = { restoreNormalProjection() })
         } catch (failure: Exception) {
@@ -436,8 +443,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         } finally { usbDispatchMutex.unlock() }
     }
 
-    private suspend fun retireUsbProjection() = usbHandoff.retire(
-        releaseCarPlay = { if (_carPlayState.value.selected) releaseCarPlayUsbOwner() },
+    private suspend fun retireUsbProjection(preserveCarPlayFailure: Boolean = false) = usbHandoff.retire(
+        releaseCarPlay = { if (_carPlayState.value.selected) releaseCarPlayUsbOwner(preserveCarPlayFailure) },
         stopAndroidAuto = { sessionManager.stop() },
     )
 
@@ -446,6 +453,24 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { restartUnifiedUsb() }
     }
     fun dismissUsbSwitchFailure() = usbHandoff.dismissFailure()
+
+    private fun presentBlockedUsbCarPlayFailure(device: android.hardware.usb.UsbDevice): Boolean {
+        if (device.vendorId != 0x05ac) return false
+        val failure = com.openautolink.app.carplay.OalUsbCarPlayRuntime
+            .blockedAttachmentFailure(getApplication(), device) ?: return false
+        carPlayCoordinator.presentFailure(failure)
+        return true
+    }
+
+    /** Visibility only; exact picker receipts and runtime permission consent still gate admission. */
+    fun isUsbCarPlayRecoveryBlocked(candidate: com.openautolink.app.transport.usb.UsbDeviceCandidate): Boolean {
+        if (candidate.vendorId != 0x05ac) return false
+        val usb = getApplication<Application>().getSystemService(android.hardware.usb.UsbManager::class.java) ?: return false
+        val device = usb.deviceList[candidate.deviceName] ?: return false
+        if (device.deviceId != candidate.deviceId || device.vendorId != candidate.vendorId ||
+            device.productId != candidate.productId) return false
+        return com.openautolink.app.carplay.OalUsbCarPlayRuntime.blockedAttachmentFailure(getApplication(), device) != null
+    }
 
     private suspend fun restoreNormalProjection() {
         _carPlayStartupGuidance.value = null
@@ -550,6 +575,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             val saved = preferences.carPlaySettings.first()
             if (!saved.enabled) return@launch
             if (saved.connectionMode == "usb") {
+                val usb = getApplication<Application>().getSystemService(android.hardware.usb.UsbManager::class.java)
+                val device = usb?.deviceList?.values?.singleOrNull { it.vendorId == 0x05ac }
+                if (device != null && presentBlockedUsbCarPlayFailure(device)) return@launch
                 restartUnifiedUsb()
                 return@launch
             }
@@ -599,6 +627,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     fun stopCarPlay() { carPlayCoordinator.stop() }
     fun dismissCarPlayFailure() { carPlayCoordinator.dismissFailure() }
     fun returnToAndroidAuto() {
+        // A wired failure already restored AA after exact retirement. Do not reconnect it again.
+        if (!_carPlayState.value.selected) { dismissCarPlayFailure(); return }
         carPlayCoordinator.returnToAndroidAuto {
             viewModelScope.launch {
                 carPlayRuntime = null

@@ -26,7 +26,13 @@ class UsbAuthorizationRecoveryWiringTest {
         val aa = screen.substringAfter("\n        return\n    }")
         assertTrue("CarPlay's early return must not bypass recovery", selected.contains("if (showUsbPicker)"))
         assertTrue(selected.contains("UsbDevicePickerOverlay(onOpenSettings = { showSettings = true })"))
-        assertTrue(selected.contains("!showUsbPicker) carPlayState.failure"))
+        val shared = screen.substringBefore("if (carPlayState.selected) {")
+        assertTrue("Failures survive automatic restoration to the AA branch",
+            shared.contains("carPlayState.failure?.let"))
+        assertTrue("Picker must not mask actionable failure guidance",
+            shared.contains("val showUsbPicker = carPlayState.failure == null"))
+        assertTrue("Acknowledged fenced attachments must not reopen the picker",
+            shared.contains("!viewModel.isUsbCarPlayRecoveryBlocked(it)"))
         assertTrue(aa.contains("if (showUsbPicker)"))
         assertTrue(aa.contains("UsbDevicePickerOverlay(onOpenSettings = { showSettings = true })"))
     }

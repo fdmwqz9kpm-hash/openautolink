@@ -86,7 +86,8 @@ class CarPlayExplicitPermissionRetryTest {
         }
         assertTrue(message + " state=" + vm.carPlayState.value, condition())
     }
-    private fun setup(explicitFirst: Boolean = false) = runBlocking {
+    private fun setup(explicitFirst: Boolean = false, timeout: Boolean = false) = runBlocking {
+        nextGrant = timeout
         Dispatchers.setMain(main)
         mockkObject(com.openautolink.app.diagnostics.DiagnosticLog)
         every { com.openautolink.app.diagnostics.DiagnosticLog.i(any(), any()) } answers {
@@ -126,6 +127,7 @@ class CarPlayExplicitPermissionRetryTest {
         every { usb.deviceList } answers { HashMap(census) }
         every { usb.hasPermission(apple) } answers { granted }
         every { usb.openDevice(any()) } returns null
+        if (timeout) every { usb.openDevice(any()) } throws java.util.concurrent.TimeoutException()
         mockkStatic(VpnService::class)
         every { VpnService.prepare(any()) } returns null
         every { usb.requestPermission(apple, any<PendingIntent>()) } answers {
@@ -152,9 +154,14 @@ class CarPlayExplicitPermissionRetryTest {
             UsbConnectionManager.connectionState.value == UsbConnectionState.AWAITING_USER_SELECTION &&
                 !vm.carPlayState.value.selected
         }
-        assertTrue("Initial real waiter must report DENIED, not a fixture/setup failure: $receipts",
-            receipts.any { it.contains("CarPlay USB stage=usb-permission result=denied") })
+        val expectedReceipt = if (timeout) "CarPlay USB stage=failed reason=TIMEOUT"
+            else "CarPlay USB stage=usb-permission result=denied"
+        assertTrue("Initial real runtime must report $expectedReceipt, not a fixture/setup failure: $receipts",
+            receipts.any { it.contains(expectedReceipt) })
         manager = field("unifiedUsbManager") as UsbConnectionManager
+        await("Wait for the actual USB override clearing boundary, not only CP deselection") {
+            (field("usbSwitchPolicy") as UsbHotPlugSwitchPolicy).generation == null
+        }
     }
     private fun select() {
         // Same production entry used by ProjectionScreen's picker onClick.
@@ -189,8 +196,125 @@ class CarPlayExplicitPermissionRetryTest {
         runBlocking { storeJob.cancelAndJoin() }
         unmockkAll(); Dispatchers.resetMain()
     }
+    @Test fun wiredTimeoutRetirementPreservesActionableFailureAfterAndroidOwnershipRestored() {
+        setup(timeout = true)
+        assertNotNull("Automatic USB restoration must not erase the original timeout guidance", vm.carPlayState.value.failure)
+        assertTrue(vm.carPlayState.value.failure!!.userGuidance.contains("timed out"))
+        assertFalse(vm.carPlayState.value.selected)
+        assertFalse(vm.carPlayState.value.busy)
+        verify(exactly = 1) { usb.openDevice(apple) }
+        assertEquals(1, requests)
+    }
+
+    @Test fun normalAndroidDispatchDoesNotEraseTheRestoredWiredFailure() {
+        setup(timeout = true)
+        val failure = vm.carPlayState.value.failure
+        assertNotNull(failure)
+        val session = field("sessionManager") as SessionManager
+        val dispatched = java.util.concurrent.atomic.AtomicBoolean()
+        every { session.setDefaultPhoneName(any()) } answers { dispatched.set(true); Unit }
+        runBlocking { preferences.setDirectTransport(AppPreferences.DIRECT_TRANSPORT_WPP) }
+        vm.connect() // Same production normal-AA dispatch used by restoreNormalProjection.
+        await("Normal AA must reach its session configuration boundary") { dispatched.get() }
+        await("Normal AA dispatch must finish without consuming the CP failure receipt") { field("connectInFlight") == false }
+        assertSame(failure, vm.carPlayState.value.failure)
+        assertFalse(vm.carPlayState.value.selected)
+        assertEquals(1, requests)
+        verify(exactly = 1) { usb.openDevice(apple) }
+    }
+
+    @Test fun fencedSameIphoneSelectionExplainsFailureWithoutSwitchOrRetiringAndroidAgain() {
+        setup(timeout = true)
+        val session = field("sessionManager") as SessionManager
+        assertTrue(vm.isUsbCarPlayRecoveryBlocked(UsbConnectionManager.availableDevices.value.single()))
+        repeat(3) {
+            vm.dismissCarPlayFailure()
+            aaState.value = SessionState.CONNECTING
+            clearMocks(session, answers = false, recordedCalls = true)
+            select()
+            await("A fenced attachment must explain recovery, not disappear") {
+                vm.usbHotPlugPrompt.value != null || vm.carPlayState.value.failure != null
+            }
+            val prompt = vm.usbHotPlugPrompt.value
+            if (prompt != null) {
+                vm.acceptUsbHotPlug(prompt.generation)
+                await("Old blocked handoff must settle for a meaningful RED") {
+                    vm.carPlayState.value.failure != null && !vm.carPlayState.value.selected
+                }
+            }
+            assertNull("Fenced same-iPhone selection must not offer a destructive Switch", prompt)
+            assertFalse(vm.carPlayState.value.selected)
+            coVerify(exactly = 0) { session.stop() }
+            assertEquals(SessionState.CONNECTING, aaState.value)
+            assertEquals(1, requests)
+            verify(exactly = 1) { usb.openDevice(apple) }
+            vm.returnToAndroidAuto() // Already restored: acknowledge without touching healthy AA.
+            assertNull(vm.carPlayState.value.failure)
+            assertTrue("Dismissal must not reopen the fenced attachment's recovery picker",
+                vm.isUsbCarPlayRecoveryBlocked(UsbConnectionManager.availableDevices.value.single()))
+            vm.reconnectCarPlay()
+            await("Generic Retry must explain the same fence without another handoff") { vm.carPlayState.value.failure != null }
+            coVerify(exactly = 0) { session.stop() }
+            assertEquals(SessionState.CONNECTING, aaState.value)
+        }
+    }
+
+    @Test fun failedAttachmentDoesNotHideFreshEnumerationAndStayDoesNotAuthorizeIt() {
+        setup(timeout = true)
+        val stale = UsbConnectionManager.availableDevices.value.single()
+        census.remove(apple.deviceName)
+        app.sendBroadcast(Intent(UsbManager.ACTION_USB_DEVICE_DETACHED).putExtra(UsbManager.EXTRA_DEVICE, apple))
+        await("Detach must remove the failed picker attachment") { UsbConnectionManager.availableDevices.value.isEmpty() }
+        val fresh = mockk<UsbDevice>(relaxed = true) {
+            every { deviceName } returns "/dev/bus/usb/008/$enumerationId"
+            every { deviceId } returns enumerationId + 100000
+            every { vendorId } returns 0x05ac; every { productId } returns 0x12a8
+            every { configurationCount } returns 1; every { getConfiguration(0) } returns configuration
+            every { interfaceCount } returns 1; every { getInterface(0) } returns mux
+        }
+        vm.dismissCarPlayFailure()
+        aaState.value = SessionState.CONNECTING
+        val session = field("sessionManager") as SessionManager
+        clearMocks(session, answers = false, recordedCalls = true)
+        census[fresh.deviceName] = fresh
+        app.sendBroadcast(Intent(UsbManager.ACTION_USB_DEVICE_ATTACHED).putExtra(UsbManager.EXTRA_DEVICE, fresh))
+        await("A fresh exact enumeration must still offer Switch/Stay") { vm.usbHotPlugPrompt.value != null }
+        assertFalse(vm.isUsbCarPlayRecoveryBlocked(stale))
+        assertFalse(vm.isUsbCarPlayRecoveryBlocked(UsbConnectionManager.availableDevices.value.single()))
+        vm.stayOnCurrentProjection(vm.usbHotPlugPrompt.value!!.generation)
+        assertNull(vm.usbHotPlugPrompt.value)
+        assertEquals(SessionState.CONNECTING, aaState.value)
+        coVerify(exactly = 0) { session.stop() }
+        assertEquals(1, requests)
+        verify(exactly = 1) { usb.openDevice(any()) }
+    }
+
+    @Test fun newAdmittedSelectionClearsOldGuidanceBeforeAwaitedAndroidRetirement() {
+        setup()
+        assertNotNull(vm.carPlayState.value.failure)
+        val session = field("sessionManager") as SessionManager
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        coEvery { session.stop() } coAnswers {
+            entered.countDown()
+            withContext(Dispatchers.IO) { check(release.await(15, java.util.concurrent.TimeUnit.SECONDS)) }
+            aaState.value = SessionState.IDLE
+        }
+        try {
+            select()
+            await("New valid selection must reach held real handoff retirement") { entered.count == 0L }
+            assertNull("A newly claimed selection must clear stale guidance before coordinator.connect", vm.carPlayState.value.failure)
+            assertEquals("No permission work before held exact retirement", 1, requests)
+        } finally {
+            release.countDown()
+            await("New exact owner must finish permission denial and retire") { requests == 2 && settled() }
+        }
+    }
+
     @Test fun deniedAutomaticAttemptThenExplicitPickerSelectionReachesFreshPermissionWait() {
         setup()
+        assertFalse("Actual permission denial remains reachable through explicit picker recovery",
+            vm.isUsbCarPlayRecoveryBlocked(UsbConnectionManager.availableDevices.value.single()))
         nextGrant = false
         select()
         await("Explicit attempt must reach either fresh await or the old blocking guard") {
@@ -212,12 +336,12 @@ class CarPlayExplicitPermissionRetryTest {
         await("Null USB open sentinel must retire the real runtime", ::settled)
         assertTrue(receipts.any { it.contains("CarPlay USB stage=usb-permission result=granted") })
         verify(exactly = 1) { usb.openDevice(apple) }
-        val blocked = receipts.count { it.contains("CarPlay USB stage=retry result=blocked") }
+        vm.dismissCarPlayFailure()
         select()
-        await("Even explicit selection must retain the subsequent transport/setup failure fence") {
-            receipts.count { it.contains("CarPlay USB stage=retry result=blocked") } > blocked
+        await("Even explicit selection must explain the subsequent setup fence before handoff") {
+            vm.carPlayState.value.failure != null
         }
-        await("Other-failure attempt must retire", ::settled)
+        assertFalse("Preflight must not instantiate another receiver", vm.carPlayState.value.selected)
         verify(exactly = 1) { usb.openDevice(apple) }
         assertEquals(2, requests)
     }

@@ -128,16 +128,6 @@ class OalUsbCarPlayRuntime(
     private var trustPending = false
     private var permissionAwaitDenied = false
     private var topology = topology(device)
-    private fun topology(value: UsbDevice) = UsbCarPlayTopology(value.deviceName, value.deviceId, value.vendorId, value.productId)
-    private fun failureUi(reason: String) = CarPlayConnectionFailure(when(reason) {
-        "PASSWORD_PROTECTED" -> CarPlayFailureKind.USB_PASSWORD_PROTECTED
-        "USER_DENIED" -> CarPlayFailureKind.USB_USER_DENIED
-        "TRUST_PENDING_TIMEOUT" -> CarPlayFailureKind.USB_TRUST_PENDING_TIMEOUT
-        "INVALID_RECORD" -> CarPlayFailureKind.USB_INVALID_RECORD
-        "TRANSPORT_LOSS" -> CarPlayFailureKind.USB_TRANSPORT_LOSS
-        "PERMISSION" -> CarPlayFailureKind.USB_PERMISSION
-        else -> CarPlayFailureKind.USB_SETUP
-    }, false)
     override fun run() {
         try { runConnection() }
         catch(failure:Exception) {
@@ -498,6 +488,29 @@ class OalUsbCarPlayRuntime(
     }
     companion object {
         private val retryFence = UsbCarPlayRetryFence()
+        private fun topology(value: UsbDevice) = UsbCarPlayTopology(value.deviceName, value.deviceId, value.vendorId, value.productId)
+        private fun failureUi(reason: String) = CarPlayConnectionFailure(when(reason) {
+            "PASSWORD_PROTECTED" -> CarPlayFailureKind.USB_PASSWORD_PROTECTED
+            "USER_DENIED" -> CarPlayFailureKind.USB_USER_DENIED
+            "TRUST_PENDING_TIMEOUT" -> CarPlayFailureKind.USB_TRUST_PENDING_TIMEOUT
+            "INVALID_RECORD" -> CarPlayFailureKind.USB_INVALID_RECORD
+            "TRANSPORT_LOSS" -> CarPlayFailureKind.USB_TRANSPORT_LOSS
+            "PERMISSION" -> CarPlayFailureKind.USB_PERMISSION
+            "TIMEOUT" -> CarPlayFailureKind.USB_STARTUP_TIMEOUT
+            else -> CarPlayFailureKind.USB_SETUP
+        }, false)
+        /** Rejection-only preflight. A real permission-await denial is left to the runtime's
+         * exact, single-use consent check; this query never grants retry authority or clears a fence. */
+        internal fun blockedAttachmentFailure(context: Context, device: UsbDevice): CarPlayFailureUi? {
+            val usb = context.getSystemService(UsbManager::class.java) ?: return null
+            val target = topology(device)
+            val attached = usb.deviceList.values.map(::topology).toSet()
+            if (target !in attached) return null
+            val reason = retryFence.blocked(target, attached, explicitPermissionRetry = true) ?: return null
+            val failure = failureUi(reason)
+            return CarPlayFailureUi(failure.kind, failure.manualPeer, failure.userGuidance)
+        }
+
         private val diagnosticSessions=java.util.concurrent.atomic.AtomicLong()
         fun isCandidate(device:UsbDevice):Boolean=UsbCarPlayPolicy.isCandidate(device.vendorId,
             (0 until device.configurationCount).flatMap { c -> val cfg=device.getConfiguration(c)

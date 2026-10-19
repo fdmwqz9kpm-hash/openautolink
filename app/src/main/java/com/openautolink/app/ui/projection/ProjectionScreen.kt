@@ -202,7 +202,8 @@ fun ProjectionScreen(
         .connectionState.collectAsStateWithLifecycle()
     val usbDevices by com.openautolink.app.transport.usb.UsbConnectionManager
         .availableDevices.collectAsStateWithLifecycle()
-    val showUsbPicker = usbHotPlugPrompt == null && !showCarPlaySafeEditor &&
+    val showUsbPicker = carPlayState.failure == null && usbHotPlugPrompt == null && !showCarPlaySafeEditor &&
+        (usbDevices.isEmpty() || usbDevices.any { !viewModel.isUsbCarPlayRecoveryBlocked(it) }) &&
         (!carPlayState.selected || usbState == com.openautolink.app.transport.usb.UsbConnectionState.AWAITING_USER_SELECTION) &&
         UsbPickerVisibility.shouldShow(
             transportMode, showSettings, showDiagnostics,
@@ -251,6 +252,31 @@ fun ProjectionScreen(
         }
     }
 
+    if (!showSettings && !showDiagnostics && !showCarPlaySafeEditor && usbHotPlugPrompt == null && usbSwitchFailure == null) carPlayState.failure?.let { failure ->
+        OalAlertDialog(
+            modifier = Modifier.testTag("carPlayFailure"),
+            onDismissRequest = viewModel::dismissCarPlayFailure,
+            title = { Text("CarPlay connection failed") },
+            text = { Text(failure.userGuidance) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = viewModel::returnToAndroidAuto) {
+                    Text(if (carPlayState.selected) "Return to Android Auto" else "Keep Android Auto")
+                }
+            },
+            dismissButton = {
+                Row {
+                    androidx.compose.material3.TextButton(onClick = { showSettings = true; viewModel.dismissCarPlayFailure() }) {
+                        Text("Connection settings")
+                    }
+                    androidx.compose.material3.TextButton(onClick = retryCarPlay,
+                        enabled = carPlayEnabled && failure.kind != com.openautolink.app.carplay.CarPlayFailureKind.USB_STARTUP_TIMEOUT) {
+                        Text("Retry CarPlay")
+                    }
+                }
+            },
+        )
+    }
+
     if (carPlayState.selected) {
         ProjectionViewport(uiState.displayMode) {
             CarPlayProjectionLayer(
@@ -285,29 +311,6 @@ fun ProjectionScreen(
             }
         }
 
-        if (!showSettings && !showDiagnostics && usbHotPlugPrompt == null && !showUsbPicker) carPlayState.failure?.let { failure ->
-            OalAlertDialog(
-                modifier = Modifier.testTag("carPlayFailure"),
-                onDismissRequest = viewModel::dismissCarPlayFailure,
-                title = { Text("CarPlay connection failed") },
-                text = { Text(failure.userGuidance) },
-                confirmButton = {
-                    androidx.compose.material3.TextButton(onClick = viewModel::returnToAndroidAuto) {
-                        Text("Return to Android Auto")
-                    }
-                },
-                dismissButton = {
-                    Row {
-                        androidx.compose.material3.TextButton(onClick = { showSettings = true; viewModel.dismissCarPlayFailure() }) {
-                            Text("Connection settings")
-                        }
-                        androidx.compose.material3.TextButton(onClick = retryCarPlay, enabled = carPlayEnabled) {
-                            Text("Retry CarPlay")
-                        }
-                    }
-                },
-            )
-        }
         androidx.activity.compose.BackHandler(!showCarPlaySafeEditor && (showSettings || showDiagnostics)) {
             showSettings = false; showDiagnostics = false
         }
