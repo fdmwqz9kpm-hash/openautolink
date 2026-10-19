@@ -21,6 +21,7 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig,
     private val retired = AtomicBoolean()
     private val started = AtomicBoolean()
     private val recordLock = Any()
+    private var captureLease: MicrophoneCaptureFence.Lease? = null
     private val pending = ArrayBlockingQueue<OpusEncoder.Frame>(4)
     @Volatile private var recorder: AudioRecord? = null
     @Volatile private var socket: DatagramSocket? = null
@@ -35,7 +36,15 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig,
             report("media stage=microphone-owner-busy")
             return
         }
+        captureLease = MicrophoneCaptureFence.tryNormal()
+        if (captureLease == null) {
+            physicalOwner.compareAndSet(this, null)
+            closed.set(true); config.key.fill(0); retired.set(true)
+            report("media stage=microphone-owner-busy")
+            return
+        }
         try { thread.start() } catch (_: Exception) {
+            captureLease?.release()
             physicalOwner.compareAndSet(this, null)
             closed.set(true); config.key.fill(0); retired.set(true)
             report("media stage=microphone-worker-start-failed")
@@ -136,11 +145,15 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig,
             if (capturedFrames > 0) captureReceipt(true)
             closed.set(true); pending.clear()
             synchronized(recordLock) { recorder = null }
-            runCatching { capture?.stop() }; runCatching { capture?.release() }
+            runCatching { capture?.stop() }
+            val captureReleased = runCatching { capture?.release() }.isSuccess
             runCatching { transport?.close() }; socket = null
             encoder?.close(); config.key.fill(0)
-            physicalOwner.compareAndSet(this, null)
-            retired.set(true)
+            if (captureReleased) {
+                captureLease?.release()
+                physicalOwner.compareAndSet(this, null)
+                retired.set(true)
+            }
         }
     }
     override fun close() {

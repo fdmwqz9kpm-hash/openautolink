@@ -39,7 +39,8 @@ class OalDialogWiringTest {
         listOf("onDismissRequest = onStay", "onClick = onSwitch", "onClick = onStay",
             "onDismissRequest = viewModel::dismissUsbSwitchFailure", "onClick = viewModel::retryUsbSwitch",
             "onDismissRequest = viewModel::dismissCarPlayFailure", "onClick = viewModel::returnToAndroidAuto",
-            "onClick = retryCarPlay, enabled = carPlayEnabled").forEach { assertTrue(it, projection.contains(it)) }
+            "onClick = retryCarPlay,", "enabled = carPlayEnabled && failure.kind != com.openautolink.app.carplay.CarPlayFailureKind.USB_STARTUP_TIMEOUT")
+            .forEach { assertTrue(it, projection.contains(it)) }
     }
 
     @Test fun `support applies sizing inside its actual window while retaining a fixed Close footer`() {

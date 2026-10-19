@@ -1,7 +1,7 @@
 package com.openautolink.app.carplay
 
 enum class CarPlayFailureKind {
-    USB_PASSWORD_PROTECTED, USB_USER_DENIED, USB_TRUST_PENDING_TIMEOUT, USB_INVALID_RECORD, USB_TRANSPORT_LOSS, USB_PERMISSION, USB_SETUP,
+    USB_PASSWORD_PROTECTED, USB_USER_DENIED, USB_TRUST_PENDING_TIMEOUT, USB_INVALID_RECORD, USB_TRANSPORT_LOSS, USB_PERMISSION, USB_SETUP, USB_STARTUP_TIMEOUT,
     NETWORK_SELECTION, BOOTSTRAP_IDENTIFICATION, BOOTSTRAP_AUTHENTICATION, WIRELESS_REQUEST_TIMEOUT,
     LISTENER_BIND, ADMISSION_POLICY, RUNTIME_IDENTIFICATION, RUNTIME_AUTHENTICATION, RUNTIME_TRANSPORT, RUNTIME_STARTUP_TIMEOUT,
 }
@@ -17,6 +17,7 @@ class CarPlayConnectionFailure(val kind: CarPlayFailureKind, val manualPeer: Boo
         CarPlayFailureKind.USB_TRANSPORT_LOSS -> "The USB data stream ended. This does not establish a cable or power fault. Check the USB connection before reconnecting."
         CarPlayFailureKind.USB_PERMISSION -> "USB permission was not granted. Automatic USB retry is paused; reconnect when ready to approve permission."
         CarPlayFailureKind.USB_SETUP -> "USB setup failed. Automatic USB retry is paused for this attachment; check diagnostics before reconnecting."
+        CarPlayFailureKind.USB_STARTUP_TIMEOUT -> "Wired CarPlay startup timed out. Retry is paused for this USB attachment. Check iPhone CarPlay approval and diagnostics, then unplug and reconnect once when ready."
         CarPlayFailureKind.NETWORK_SELECTION -> "Check the selected car Wi-Fi interface, address family and local address."
         CarPlayFailureKind.BOOTSTRAP_IDENTIFICATION -> "Selected-phone Bluetooth identification failed; check the selected bond and retry."
         CarPlayFailureKind.BOOTSTRAP_AUTHENTICATION -> "Receiver MFi authentication failed on the selected Bluetooth link; check private provisioning, not the phone IP."

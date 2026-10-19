@@ -60,12 +60,20 @@ class IndependentConnectionUiContract(unittest.TestCase):
     def test_usb_confirmation_has_priority_over_other_connection_modals(self):
         projection = function(source("projection/ProjectionScreen.kt"), "ProjectionScreen")
         self.assertRegex(projection,
-                         r'if \(!showSettings && !showDiagnostics && usbHotPlugPrompt == null && !showUsbPicker\) carPlayState\.failure',
-                         'CarPlay failure dialog must not cover a pending USB confirmation or picker')
+                         r'if \(!showSettings && !showDiagnostics && !showCarPlaySafeEditor && usbHotPlugPrompt == null && usbSwitchFailure == null\) carPlayState\.failure',
+                         'CarPlay failure dialog must not cover a pending USB confirmation or retirement failure')
         picker = projection.split('val showUsbPicker =', 1)[1].split('LaunchedEffect', 1)[0]
         self.assertIn('usbHotPlugPrompt == null &&', picker,
                       'Existing USB picker must not compete with the confirmation')
         self.assertIn('UsbPickerVisibility.shouldShow(', picker)
+        self.assertIn('carPlayState.failure == null', picker,
+                      'Picker must not mask the original failure guidance after automatic restoration')
+        self.assertIn('!viewModel.isUsbCarPlayRecoveryBlocked(it)', picker,
+                      'Acknowledging failure must not reopen a fenced attachment picker')
+
+    def test_wired_timeout_does_not_offer_an_impossible_same_attachment_retry(self):
+        projection = function(source("projection/ProjectionScreen.kt"), "ProjectionScreen")
+        self.assertIn('failure.kind != com.openautolink.app.carplay.CarPlayFailureKind.USB_STARTUP_TIMEOUT', projection)
 
     def test_usb_confirmation_is_common_to_both_projection_branches(self):
         screen = source("projection/ProjectionScreen.kt")

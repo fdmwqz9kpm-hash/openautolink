@@ -46,6 +46,16 @@ class CarPlayFailurePresentationTest {
     }
 
     /** Source wiring guard, not rendered Compose/device proof. */
+    @Test fun restoredAndroidBranchStillPresentsFailureBeforeCarPlayEarlyReturn() {
+        val screen = File("src/main/java/com/openautolink/app/ui/projection/ProjectionScreen.kt").readText()
+        assertTrue("Failure presentation must be shared by restored AA and selected CP",
+            screen.indexOf("Modifier.testTag(\"carPlayFailure\")") < screen.indexOf("if (carPlayState.selected)"))
+        assertTrue("The failed attachment picker must not cover its failure actions",
+            screen.substringAfter("val showUsbPicker =").substringBefore("LaunchedEffect(showSettings)")
+                .contains("carPlayState.failure == null"))
+    }
+
+    /** Source wiring guard, not rendered Compose/device proof. */
     @Test fun projectionPresentsTypedFailureOutsideSettingsAndStats() {
         val screen = File("src/main/java/com/openautolink/app/ui/projection/ProjectionScreen.kt").readText()
         assertTrue("Actionable guidance needs a persistent projection presentation", screen.contains("carPlayState.failure"))
