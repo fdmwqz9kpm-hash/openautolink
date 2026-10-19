@@ -1522,6 +1522,12 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    /** Fast, read-only diagnostic gate; capture leases independently fence late recorder retirement. */
+    fun microphoneDiagnosticEligible(): Boolean =
+        usbOverrideGeneration == null && !connectInFlight && !_carPlayState.value.busy &&
+            sessionManager.sessionState.value == SessionState.IDLE &&
+            _usbHotPlugPrompt.value == null
+
     fun disconnect() {
         // stop() closes the native transport, which blocks until the native side
         // releases its lock. viewModelScope is Dispatchers.Main, so this was the

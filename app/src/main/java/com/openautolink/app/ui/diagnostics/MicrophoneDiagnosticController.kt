@@ -16,6 +16,8 @@ class MicrophoneDiagnosticController(
     var state by androidx.compose.runtime.mutableStateOf(backend?.state ?: MicrophoneDiagnosticState())
         private set
     private var cancelPending = false
+    var summaryStored by androidx.compose.runtime.mutableStateOf<Boolean?>(null)
+        internal set
     @Volatile private var foreground = false
     @Volatile private var consentSnapshot = false
     @Volatile private var stationarySnapshot = false

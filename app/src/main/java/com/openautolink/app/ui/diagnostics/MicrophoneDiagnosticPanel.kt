@@ -33,7 +33,7 @@ fun MicrophoneDiagnosticPanel(controller: MicrophoneDiagnosticController) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Microphone diagnostic", style = MaterialTheme.typography.headlineSmall)
         Text("Disconnect all projection phones. Leave the iPhone unpaired. No native calls during this test.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("Opt-in only · up to 3 seconds per arm · 15 seconds maximum comparison. No audio saved or played; no capture settings changed.", style = MaterialTheme.typography.bodySmall)
+        Text("Opt-in only · up to 3 seconds per arm · 15-second comparison deadline. A stalled recorder may take longer to release. No audio saved or played; normal capture settings stay unchanged.", style = MaterialTheme.typography.bodySmall)
         Confirmation("mic-consent", "I consent to this bounded microphone test", controller.consent, controller::updateConsent)
         if (!controller.automotive) Confirmation("mic-stationary", "I confirm the vehicle is stationary", controller.stationary, controller::updateStationary)
         if (controller.busy) {
@@ -56,6 +56,11 @@ fun MicrophoneDiagnosticPanel(controller: MicrophoneDiagnosticController) {
         }
         Text("Source: VOICE_RECOGNITION (6) · no effects attached", style = MaterialTheme.typography.bodySmall)
         if (controller.state.phase == MicrophoneDiagnosticPhase.COMPLETE) controller.state.result?.let {
+            Text(when (controller.summaryStored) {
+                true -> "Latest numeric summary saved for manual Upload Logs. Upload before running another comparison."
+                false -> "Summary could not be saved. The onscreen results remain available."
+                null -> "Numeric summary · only the latest completed comparison is retained."
+            }, style = MaterialTheme.typography.bodySmall)
             MicrophoneDiagnosticSummary(it)
         }
         Text("Outcome: ${controller.state.result?.reason ?: controller.state.reason}", Modifier.testTag("mic-outcome"),

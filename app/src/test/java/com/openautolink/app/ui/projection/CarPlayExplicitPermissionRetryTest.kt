@@ -196,6 +196,33 @@ class CarPlayExplicitPermissionRetryTest {
         runBlocking { storeJob.cancelAndJoin() }
         unmockkAll(); Dispatchers.resetMain()
     }
+    @Test fun microphoneDiagnosticRejectsClaimedUsbWhileAaStillIdleAndUntilRetirement() = runBlocking {
+        setup()
+        aaState.value = SessionState.IDLE
+        assertTrue(vm.microphoneDiagnosticEligible())
+        val policy = field("usbSwitchPolicy") as UsbHotPlugSwitchPolicy
+        // Real admission policy reproduces the pre-transport AOA interval; platform services are fixtures.
+        assertTrue(policy.accept(987654L,
+            resolve = { UsbHotPlugSwitchPolicy.Protocol.ANDROID_AUTO }, eligible = { true },
+            claimed = {}, retire = {}, admit = { true }, cleared = {}, restore = {}))
+        assertEquals(SessionState.IDLE, aaState.value)
+        try {
+            assertFalse("Claimed USB setup must block capture before AA CONNECTING", vm.microphoneDiagnosticEligible())
+            try {
+                policy.finish(987654L, retire = { throw IllegalStateException("fixture retained retirement") },
+                    cleared = {}, restore = {})
+                fail("Retirement fixture must fail")
+            } catch (_: IllegalStateException) { }
+            assertFalse("Failed USB retirement must retain diagnostic exclusion", vm.microphoneDiagnosticEligible())
+        } finally { policy.finish(987654L, retire = {}, cleared = {}, restore = {}) }
+        assertTrue(vm.microphoneDiagnosticEligible())
+        @Suppress("UNCHECKED_CAST")
+        val cp = field("_carPlayState") as MutableStateFlow<CarPlayUiState>
+        cp.value = CarPlayUiState(selected = true, busy = false)
+        assertTrue("Fully retired selected CarPlay must remain testable", vm.microphoneDiagnosticEligible())
+        cp.value = CarPlayUiState()
+    }
+
     @Test fun wiredTimeoutRetirementPreservesActionableFailureAfterAndroidOwnershipRestored() {
         setup(timeout = true)
         assertNotNull("Automatic USB restoration must not erase the original timeout guidance", vm.carPlayState.value.failure)

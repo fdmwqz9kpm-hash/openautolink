@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.534 — microphone diagnostics and connection recovery
+
+- Add an explicit, foreground-only parked microphone diagnostic with passive input inspection and separate channel, sample-rate and preferred-input comparisons. Report requested/recorder/client/device formats, route stability and numeric signal aggregates without recording or uploading audio.
+- Require fresh actual Park on automotive devices, explicit consent, no active/connecting projection and safe recording policy. Cancel on background/tab exit, policy loss or deadlines; retain capture exclusion until the recorder actually releases. Normal CarPlay and Android Auto capture settings are unchanged when the tool is idle.
+- Save only the latest completed numeric result for the existing manual log uploader. A completed procedure or nonzero samples do not establish speech recognition or caller audibility.
+- Preserve useful wired CarPlay failure guidance when Android Auto resumes. Reject a fenced USB attachment before another destructive handoff and avoid the repeated picker loop; retain the separate explicit permission-denial retry path. The initial network-control timeout remains unresolved.
+- Restore persistent amber/green/red upload status, clear success wording and safe failure codes in the single OAL menu. Keep the upload action visible and prevent duplicate uploads.
+- Physical tablet testing confirmed channel/rate comparisons, stable route reporting, absent preferred-input rejection, Home cancellation, consent reset and subsequent capture reservation availability. GM input mapping, car microphone recovery and two-way CarPlay call audio remain unverified.
+- No companion runtime changes. Distribution remains the original and Groups 2–5 internal listings; Community and tester lists are unchanged.
+
 ## 0.1.532 — cluster guidance and vehicle data
 
 ### Cluster guidance and maneuver coverage

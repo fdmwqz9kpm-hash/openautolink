@@ -9,6 +9,7 @@ import android.media.audiofx.NoiseSuppressor
 import android.os.Process
 import android.util.Log
 import com.openautolink.app.transport.AudioPurpose
+import com.shilapi.xcertplay.media.MicrophoneCaptureFence
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -62,11 +63,15 @@ class MicCaptureManager(private val sendMicFrame: (AudioFrame) -> Unit) {
     fun start(sampleRate: Int) {
         if (capturing.getAndSet(true)) return
 
+        val lease = MicrophoneCaptureFence.tryNormal()
+        if (lease == null) { capturing.set(false); return }
         currentSampleRate = sampleRate
-        captureThread = Thread({
-            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-            captureLoop(sampleRate)
-        }, "MicCapture").also { it.start() }
+        try {
+            captureThread = Thread({ captureLoop(sampleRate, lease) }, "MicCapture").also { it.start() }
+        } catch (failure: Throwable) {
+            lease.release(); capturing.set(false)
+            throw failure
+        }
 
         Log.i(TAG, "Mic capture started at ${sampleRate}Hz")
     }
@@ -89,7 +94,11 @@ class MicCaptureManager(private val sendMicFrame: (AudioFrame) -> Unit) {
         micPurpose.set(AudioPurpose.ASSISTANT)
     }
 
-    private fun captureLoop(sampleRate: Int) {
+    private fun captureLoop(sampleRate: Int, lease: MicrophoneCaptureFence.Lease) {
+        // Keep this reservation local to the existing worker. stop()/interrupt is not release.
+        var captureReleased = true
+        try {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val minBufSize = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, AUDIO_ENCODING)
         if (minBufSize == AudioRecord.ERROR || minBufSize == AudioRecord.ERROR_BAD_VALUE) {
             Log.e(TAG, "Invalid AudioRecord buffer size for ${sampleRate}Hz")
@@ -116,9 +125,11 @@ class MicCaptureManager(private val sendMicFrame: (AudioFrame) -> Unit) {
             return
         }
 
+        captureReleased = false
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord failed to initialize (source=VOICE_RECOGNITION, rate=$sampleRate)")
             recorder.release()
+            captureReleased = true
             capturing.set(false)
             return
         }
@@ -169,8 +180,12 @@ class MicCaptureManager(private val sendMicFrame: (AudioFrame) -> Unit) {
                 recorder.stop()
             } catch (_: IllegalStateException) {}
             recorder.release()
+            captureReleased = true
             audioRecord = null
             capturing.set(false)
+        }
+        } finally {
+            if (captureReleased) lease.release()
         }
     }
 
