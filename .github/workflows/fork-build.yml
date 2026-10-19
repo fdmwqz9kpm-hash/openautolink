@@ -8,16 +8,10 @@ name: Fork Build
 #
 # Native deps are downloaded from the upstream repo's public release.
 
+# This fork signs private Play builds locally. Run this optional public-release
+# workflow manually only after deliberately configuring its signing secrets.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'app/**'
-      - 'companion/**'
-      - 'build.gradle.kts'
-      - 'settings.gradle.kts'
-      - 'gradle/**'
 
 permissions:
   contents: write

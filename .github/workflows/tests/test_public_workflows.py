@@ -58,7 +58,13 @@ class PublicWorkflowContracts(unittest.TestCase):
             for package in ("platforms;android-36", "build-tools;34.0.0", "ndk;28.2.13676358", "cmake;3.22.1"):
                 self.assertIn(package, source)
             native = run_block(source, "Download native deps")
-            self.assertIn('--repo "$GITHUB_REPOSITORY"', native)
+            if source == CI:
+                self.assertIn('--repo mossyhub/openautolink', native)
+                self.assertIn('sha256sum --check --strict', native)
+                self.assertLess(native.index('sha256sum --check --strict'), native.index('tar xzf'))
+                self.assertIn('7211802c7a2d390d2d178cfa873344e7b90c9357', native)
+            else:
+                self.assertIn('--repo "$GITHUB_REPOSITORY"', native)
             self.assertIn("-C app/src/main/cpp/", native)
             self.assertIn("third_party/boost/include/boost/asio.hpp", native)
             self.assertIn("third_party/openssl/${ABI}/lib/libssl.a", native)

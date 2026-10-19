@@ -70,8 +70,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The fork uses upstream prebuilt libraries, pinned to our aasdk revision.
+          test "$(git -C external/opencardev-aasdk rev-parse HEAD)" = 7211802c7a2d390d2d178cfa873344e7b90c9357
           for ABI in arm64-v8a x86_64; do
-            gh release download native-deps --repo "$GITHUB_REPOSITORY" -p "native-deps-${ABI}.tar.gz" -O "$RUNNER_TEMP/native-deps-${ABI}.tar.gz"
+            gh release download native-deps --repo mossyhub/openautolink -p "native-deps-${ABI}.tar.gz" -O "$RUNNER_TEMP/native-deps-${ABI}.tar.gz"
+            case "$ABI" in
+              arm64-v8a) EXPECTED=a105e287a80cce6e49e982b49503347a376cb82f8af62b1188ed5831139d4317 ;;
+              x86_64) EXPECTED=bdf67884b3b3b3e2424d1afd9c034deb5592b9224e8e95fc8bee04c15f32149d ;;
+            esac
+            printf '%s  %s\n' "$EXPECTED" "$RUNNER_TEMP/native-deps-${ABI}.tar.gz" | sha256sum --check --strict
             tar xzf "$RUNNER_TEMP/native-deps-${ABI}.tar.gz" -C app/src/main/cpp/
             test -f app/src/main/cpp/third_party/boost/include/boost/asio.hpp
             test -f "app/src/main/cpp/third_party/openssl/${ABI}/lib/libssl.a"
