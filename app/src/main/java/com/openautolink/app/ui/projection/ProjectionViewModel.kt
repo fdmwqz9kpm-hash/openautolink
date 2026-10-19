@@ -32,6 +32,7 @@ import com.openautolink.app.diagnostics.OalLog
 import com.openautolink.app.diagnostics.DiagnosticLog
 import com.openautolink.app.diagnostics.FileLogWriter
 import com.openautolink.app.diagnostics.LogUploader
+import com.openautolink.app.diagnostics.UploadFailureCode
 import com.openautolink.app.diagnostics.UploadResult
 import com.openautolink.app.diagnostics.LogcatCapture
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -80,6 +81,7 @@ data class ProjectionUiState(
     val fileLoggingEnabled: Boolean = false,
     val uploadEnabled: Boolean = false,
     val uploadState: LogUploadState = LogUploadState.IDLE,
+    val uploadStatusMessage: String? = null,
     /**
      * Non-zero while the session is retrying after a drop.
      *
@@ -95,9 +97,6 @@ data class ProjectionUiState(
     val overlayPhoneSwitchButton: Boolean = AppPreferences.DEFAULT_OVERLAY_PHONE_SWITCH_BUTTON,
     val overlayReconnectButton: Boolean = AppPreferences.DEFAULT_OVERLAY_RECONNECT_BUTTON,
 )
-
-/** State of the maintainer log-upload action, drives the floating button color. */
-enum class LogUploadState { IDLE, UPLOADING, SUCCESS, ERROR }
 
 @OptIn(kotlinx.coroutines.FlowPreview::class)
 class ProjectionViewModel(application: Application) : AndroidViewModel(application) {
@@ -771,8 +770,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     private var fileLogWriter: FileLogWriter? = null
     private var logcatCapture: LogcatCapture? = null
 
-    // Maintainer log-upload action state (drives the floating Upload button color).
-    private val _uploadState = MutableStateFlow(LogUploadState.IDLE)
+    // Upload feedback belongs to the ViewModel, not the disposable menu.
+    private val logUploadAction = LogUploadAction()
 
     // Pending surface — stored when surfaceCreated fires before decoder exists.
     // Attached to decoder on session start or when decoder becomes available.
@@ -838,7 +837,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         _fileLoggingPath,
         preferences.fileLoggingEnabled,
         preferences.logUploadEnabled,
-        _uploadState,
+        logUploadAction.feedback,
         preferences.simulateIgnitionButton,
         sessionManager.reconnectAttempt,
         preferences.overlayStatsButton,
@@ -874,7 +873,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             fileLoggingPath = values[25] as? String,
             fileLoggingEnabled = values[26] as Boolean,
             uploadEnabled = values[27] as Boolean,
-            uploadState = values[28] as LogUploadState,
+            uploadState = (values[28] as LogUploadFeedback).state,
+            uploadStatusMessage = (values[28] as LogUploadFeedback).message,
             simulateIgnitionButton = values[29] as Boolean,
             reconnectAttempt = values[30] as Int,
             overlayStatsButton = values[31] as Boolean,
@@ -2743,53 +2743,21 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
      *  mount event \u2014 they'll have to toggle the pref off/on or restart the app. */
     @Volatile private var autoUsbLoggingActive = false
 
-    /**
-     * Maintainer-only: zip recent logs and POST them to the configured
-     * endpoint. No-ops (with an ERROR flash) if the feature is unconfigured.
-     * Drives [ProjectionUiState.uploadState] so the floating button shows
-     * amber (uploading) -> green (success) / red (error), reverting after 3s.
-     */
+    /** Maintainer-only manual upload; the action owns status independently of the menu. */
     fun uploadLogsNow() {
-        if (_uploadState.value == LogUploadState.UPLOADING) return
-        _uploadState.value = LogUploadState.UPLOADING
-        viewModelScope.launch {
+        logUploadAction.upload(viewModelScope) {
             if (!preferences.logUploadEnabled.first()) {
-                flashUpload(LogUploadState.ERROR)
-                return@launch
+                return@upload UploadResult.Failure("upload disabled", UploadFailureCode.DISABLED)
             }
             val url = preferences.logUploadUrl.first()
             val token = preferences.logUploadToken.first()
             val label = preferences.logUploadDeviceLabel.first()
             if (url.isBlank() || token.isBlank()) {
                 OalLog.w(TAG, "Upload tapped but URL/token not configured")
-                flashUpload(LogUploadState.ERROR)
-                return@launch
+                return@upload UploadResult.Failure("upload not configured", UploadFailureCode.NOT_CONFIGURED)
             }
-            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 LogUploader(getApplication()).upload(url, token, label)
-            }
-            android.widget.Toast.makeText(
-                getApplication(),
-                when (result) {
-                    is UploadResult.Success -> "Uploaded: ${result.coverage}"
-                    is UploadResult.Failure -> "Upload failed: ${result.reason}"
-                },
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-            flashUpload(
-                if (result is UploadResult.Success) LogUploadState.SUCCESS
-                else LogUploadState.ERROR
-            )
-        }
-    }
-
-    /** Set the upload state; auto-revert SUCCESS/ERROR to IDLE after 3s. */
-    private fun flashUpload(state: LogUploadState) {
-        _uploadState.value = state
-        if (state == LogUploadState.SUCCESS || state == LogUploadState.ERROR) {
-            viewModelScope.launch {
-                kotlinx.coroutines.delay(3000)
-                if (_uploadState.value == state) _uploadState.value = LogUploadState.IDLE
             }
         }
     }

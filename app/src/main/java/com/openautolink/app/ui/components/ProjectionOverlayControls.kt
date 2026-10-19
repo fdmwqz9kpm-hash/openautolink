@@ -33,6 +33,8 @@ internal data class OverlayControl(
     val action: () -> Unit,
     val status: String? = null,
     val tint: Color = Color.Unspecified,
+    val enabled: Boolean = true,
+    val dismissOnClick: Boolean = true,
 )
 
 private const val MENU_DRAG_HINT = "Hold and drag me where you want me"
@@ -80,7 +82,7 @@ fun ProjectionOverlayControls(
                     LogUploadState.ERROR -> Icons.Default.CloudOff
                     else -> Icons.Default.CloudUpload
                 }, onUpload,
-                when (uiState.uploadState) {
+                uiState.uploadStatusMessage ?: when (uiState.uploadState) {
                     LogUploadState.UPLOADING -> "Uploading"
                     LogUploadState.SUCCESS -> "Uploaded"
                     LogUploadState.ERROR -> "Upload failed"
@@ -88,10 +90,12 @@ fun ProjectionOverlayControls(
                 },
                 when (uiState.uploadState) {
                     LogUploadState.UPLOADING -> colors.tertiary
-                    LogUploadState.SUCCESS -> Color(0xFF2E7D32)
+                    LogUploadState.SUCCESS -> colors.secondary
                     LogUploadState.ERROR -> colors.error
                     LogUploadState.IDLE -> Color.Unspecified
-                }))
+                },
+                enabled = uiState.uploadState != LogUploadState.UPLOADING,
+                dismissOnClick = false))
         }
         if (onSimulateIgnition != null && uiState.simulateIgnitionButton) {
             add(OverlayControl("Simulate ignition cycle", Icons.Default.PowerSettingsNew, onSimulateIgnition))
@@ -241,16 +245,20 @@ internal fun ProjectionOverlayRecoveryDialog(
                     actions.forEach { control ->
                         val tint = if (control.tint == Color.Unspecified) MaterialTheme.colorScheme.onSurface else control.tint
                         TextButton(
-                            onClick = { onDismiss(); control.action() },
+                            onClick = {
+                                if (control.dismissOnClick) onDismiss()
+                                control.action()
+                            },
+                            enabled = control.enabled,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                                 .testTag("overlayRecoveryAction:${control.label}"),
-                            colors = ButtonDefaults.textButtonColors(contentColor = tint),
+                            colors = ButtonDefaults.textButtonColors(contentColor = tint, disabledContentColor = tint),
                         ) {
                             Icon(control.icon, contentDescription = null, modifier = Modifier.size(24.dp))
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                                Text(control.label)
-                                control.status?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
+                                Text(control.label, color = tint)
+                                control.status?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = tint) }
                             }
                         }
                     }
