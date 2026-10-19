@@ -36,6 +36,7 @@ class OalUsbCarPlayRuntime(
     private val onReplacementAccepted: (UsbDevice) -> Boolean = { false },
     private val initialPermissionOwner: () -> Boolean = { true },
     private val consumeExplicitPermissionRetry: () -> Boolean = { false },
+    private val restrictionPolicy: CarPlayRestrictionPolicy = CarPlayRestrictionPolicy.from(com.openautolink.app.data.CarPlaySettings()),
 ) : CarPlayRuntime {
     private val canceled=AtomicBoolean()
     private val resourcesLock=Any()
@@ -127,16 +128,6 @@ class OalUsbCarPlayRuntime(
     private var trustPending = false
     private var permissionAwaitDenied = false
     private var topology = topology(device)
-    private fun topology(value: UsbDevice) = UsbCarPlayTopology(value.deviceName, value.deviceId, value.vendorId, value.productId)
-    private fun failureUi(reason: String) = CarPlayConnectionFailure(when(reason) {
-        "PASSWORD_PROTECTED" -> CarPlayFailureKind.USB_PASSWORD_PROTECTED
-        "USER_DENIED" -> CarPlayFailureKind.USB_USER_DENIED
-        "TRUST_PENDING_TIMEOUT" -> CarPlayFailureKind.USB_TRUST_PENDING_TIMEOUT
-        "INVALID_RECORD" -> CarPlayFailureKind.USB_INVALID_RECORD
-        "TRANSPORT_LOSS" -> CarPlayFailureKind.USB_TRANSPORT_LOSS
-        "PERMISSION" -> CarPlayFailureKind.USB_PERMISSION
-        else -> CarPlayFailureKind.USB_SETUP
-    }, false)
     override fun run() {
         try { runConnection() }
         catch(failure:Exception) {
@@ -324,7 +315,7 @@ class OalUsbCarPlayRuntime(
             fd=vpn.attach(token,address)
             AutoCloseable { vpn.detach(token) }
         }
-        val bridge=own { Ipv6NcmBridge(ncm,fd,mac) { cancel() } }
+        val bridge=own { Ipv6NcmBridge(ncm,fd,mac,hostIpv6=InetAddress.getByName(address).address) { cancel() } }
         synchronized(resourcesLock) { active();bridge.start() }
         val nicDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5)
         var nic:NetworkInterface?=null
@@ -340,18 +331,17 @@ class OalUsbCarPlayRuntime(
         val gps=context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED &&
             runCatching { context.getSystemService(LocationManager::class.java)?.isProviderEnabled(LocationManager.GPS_PROVIDER)==true }.getOrDefault(false)
         val vehicle=OalCarPlayVehicleSnapshotAdapter()
-        val snapshot=vehicle.snapshot(::status)
-        val capabilities=com.openautolink.carplaylab.intake.OalCarDataCapabilities(gps,snapshot?.rangeKm!=null,
-            snapshot?.currentChargeWh!=null,snapshot?.maxChargeWh!=null)
+        val capabilities=vehicle.capabilities(gps,::status)
         val vehicleBootstrap=own { com.openautolink.carplaylab.intake.OalCarDataBootstrap(capabilities,SystemClock::elapsedRealtime,::status) }
         val identification=Iap2IdentificationConfig("OpenAutoLink","OAL-native-CarPlay","OpenAutoLink",
             "oal-private-receiver","0.1","Android",function.data.id,externalAccessoryProtocol="com.openautolink.carplaylab")
         val projection=ownReceiver { ProjectionReceiver(context,identity,surface,auth,display,trustedOnly=true,
             runtimeCarDataFactory={ session,send,receipt ->
-                vehicleBootstrap.wrap(OalCarPlayIntakeLink(gps,vehicle,OalCarPlayGnssSnapshotAdapter(SystemClock::elapsedRealtime) {
+                vehicleBootstrap.wrap(OalCarPlayIntakeLink(gps,vehicle,OalCarPlayGnssSnapshotAdapter(SystemClock::elapsedRealtime, requireSourceTime = true) {
                     sink -> GnssForwarderImpl(context.applicationContext,sink,true)
                 },SystemClock::elapsedRealtime,CarPlayAppearanceBridge(),session::setNightModeIfEventReady,send,receipt,
-                    frozenCapabilities=capabilities))
+                    frozenCapabilities=capabilities, restrictionPolicy = restrictionPolicy,
+                    sendLimitedUI = session::setLimitedUIIfEventReady))
             },runtimeMetadataFactory={ session, receipt -> own {
                 active()
                 val metadata = OalCarPlayMetadataLink(SystemClock::elapsedRealtime, receipt,
@@ -364,7 +354,7 @@ class OalUsbCarPlayRuntime(
                             ?.carBluetoothConnectionObserver?.subscribeEvidence(listener)
                     }.getOrNull()
                 }, receipt)
-            } },wired=true,onStatus=::status) }
+            } },wired=true,drivingRestrictions = restrictionPolicy.enabled,onStatus=::status) }
         active();onDisplayQualified(projection.displayConfiguration)
         projection.setNetworkStartupDiagnosticStop(ncm::stopStartupDiagnostics)
         val scale=com.openautolink.carplaylab.media.CarPlayDisplayPolicy.scaleDiagnostic(projection.displayConfiguration)
@@ -376,7 +366,7 @@ class OalUsbCarPlayRuntime(
         status("CarPlay phone identification accepted")
         Iap2MfiAuthenticationClient(auth).run(csm,30000,onOtherFrame=vehicleBootstrap::handle) {}
         active();status("CarPlay receiver MFi authentication accepted · phone AirPlay trust pending")
-        if(projection.requiresControllerEnrollment) projection.authorizeFirstEnrollment(120000)
+        projection.authorizeControllerEnrollment(120000)
         projection.start(CarPlayNetworkSelection(local,exactNic.index,null))
         projection.setRuntimeReply { frame ->
             if(frame.messageId==0x4300) Iap2CarPlayMessages.startSession(wiredIpv6Addresses=listOf(address),
@@ -498,6 +488,29 @@ class OalUsbCarPlayRuntime(
     }
     companion object {
         private val retryFence = UsbCarPlayRetryFence()
+        private fun topology(value: UsbDevice) = UsbCarPlayTopology(value.deviceName, value.deviceId, value.vendorId, value.productId)
+        private fun failureUi(reason: String) = CarPlayConnectionFailure(when(reason) {
+            "PASSWORD_PROTECTED" -> CarPlayFailureKind.USB_PASSWORD_PROTECTED
+            "USER_DENIED" -> CarPlayFailureKind.USB_USER_DENIED
+            "TRUST_PENDING_TIMEOUT" -> CarPlayFailureKind.USB_TRUST_PENDING_TIMEOUT
+            "INVALID_RECORD" -> CarPlayFailureKind.USB_INVALID_RECORD
+            "TRANSPORT_LOSS" -> CarPlayFailureKind.USB_TRANSPORT_LOSS
+            "PERMISSION" -> CarPlayFailureKind.USB_PERMISSION
+            "TIMEOUT" -> CarPlayFailureKind.USB_STARTUP_TIMEOUT
+            else -> CarPlayFailureKind.USB_SETUP
+        }, false)
+        /** Rejection-only preflight. A real permission-await denial is left to the runtime's
+         * exact, single-use consent check; this query never grants retry authority or clears a fence. */
+        internal fun blockedAttachmentFailure(context: Context, device: UsbDevice): CarPlayFailureUi? {
+            val usb = context.getSystemService(UsbManager::class.java) ?: return null
+            val target = topology(device)
+            val attached = usb.deviceList.values.map(::topology).toSet()
+            if (target !in attached) return null
+            val reason = retryFence.blocked(target, attached, explicitPermissionRetry = true) ?: return null
+            val failure = failureUi(reason)
+            return CarPlayFailureUi(failure.kind, failure.manualPeer, failure.userGuidance)
+        }
+
         private val diagnosticSessions=java.util.concurrent.atomic.AtomicLong()
         fun isCandidate(device:UsbDevice):Boolean=UsbCarPlayPolicy.isCandidate(device.vendorId,
             (0 until device.configurationCount).flatMap { c -> val cfg=device.getConfiguration(c)

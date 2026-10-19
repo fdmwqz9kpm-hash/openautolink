@@ -1,0 +1,19 @@
+# CarPlay GPS source-time qualification
+
+The production host path owns a real `LocationManager` NMEA listener and a separate 250 ms GPS-provider request, only while an authenticated CarPlay GGA/RMC subscription needs it. A provider offer is eligibility, not a fix or an iPhone `activeGPS` receipt. Android Auto's GPS preference and independently owned location request are unchanged.
+
+## Time domains and fail-closed policy
+
+Android's [`OnNmeaMessageListener`](https://developer.android.com/reference/android/location/OnNmeaMessageListener) defines its callback timestamp as the location-fix timestamp **reported by the GNSS chipset, Unix milliseconds**, not nanoseconds or elapsed realtime. The same definition is retained in [AOSP source](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/master/location/java/android/location/OnNmeaMessageListener.java). The production callback preserves this value with callback receipt Unix time and monotonic elapsed time as internal-only provenance; raw GGA/RMC text and its encoded UTC, coordinates, metres, knots and date are not rewritten.
+
+Production admission requires all three actual timestamps. Fix age at callback receipt is computed only between Unix values, then the monotonic callback-queue delay is added. The NMEA cache retains that initial source age and adds monotonic cache residence: a repeatedly delivered old fix cannot acquire another fresh three-second lifetime. Missing, nonpositive, future, overflowed or older-than-three-second source time rejects and invalidates the cache. Monotonic rollback likewise rejects. Callback-vs-current wall/monotonic correlation must agree within one second; a larger wall-clock discontinuity invalidates retained samples rather than subtracting GNSS Unix time from elapsed realtime. A subsequent independently coherent fresh callback may establish a new correlation. This requires the device wall clock to be sufficiently synchronized; no reliable clock means no claimed fresh fix, not synthetic fallback.
+
+This is **callback timestamp freshness**, not an independent claim about encoded GGA date (which is absent), RMC calendar validation, physical GNSS quality, hardware provenance, or cross-sentence UTC coherence. Existing checksum, coordinate, time-of-day, GGA quality and RMC status admission stays in force. Synthetic fixed-UTC tablet fixtures explicitly remain a separate timestamp-unknown test adapter path; the ordinary host source always requires real timestamp provenance and never substitutes those fixtures.
+
+## Ownership
+
+Exact NMEA-provider generations fence queued callbacks from prior registrations, including stop/restart on the same provider object. Adapter generations separately fence owner replacement; stop/close clears cached samples, failed OS removal stays retained for retry, and permanent retirement rejects late callbacks. No Location object is converted into NMEA. Only requested GGA/RMC are offered/sent. PASCD, wheel speed, VHAL aggregate speed, IMU and unsupported sentences remain unimplemented rather than guessed.
+
+## Parent-owned live acceptance
+
+No device operations are part of this source/build task. Use the actual-source `off` tablet selector and a fresh real CarPlay session, preserve app data/auth/enrollment, and follow `/hermes_work/oal-non-ev-gps-next-validation.md`. Controlled/measured Blazer replay profiles deliberately have GPS disabled and cannot validate actual GNSS. Require package-owned provider request, actual valid GGA/RMC, completed FFFB writes, then separate phone accessory-source acceptance/selection evidence. Existing completed local writes do not prove phone source selection or navigation accuracy. Loss can still age out over the bounded three-second cache interval; there is no new provider-recovery state machine or immediate loss callback in this patch.

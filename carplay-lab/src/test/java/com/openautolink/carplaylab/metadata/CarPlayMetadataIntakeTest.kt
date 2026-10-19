@@ -5,6 +5,116 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CarPlayMetadataIntakeTest {
+    @Test fun changedOrEmptyCurrentInvalidatesImmediatelyAtEveryOwnershipAge() {
+        for (age in listOf(0L, 30_000L, 119_999L)) {
+            var now = 0L
+            val intake = CarPlayMetadataIntake { now }.apply { authenticate() }
+            intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2) })
+            intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,8); u8(3,3) })
+            intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)); u32(10,123) })
+            val epoch = intake.routeMetadata?.epoch
+            now = age
+            intake.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,listOf(8)) })
+            assertEquals(3, intake.navigation?.maneuverType)
+            assertNull("new instruction must not inherit previous turn distance", intake.navigation?.distanceMeters)
+            intake.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,emptyList()) })
+            assertNull(intake.navigation)
+            intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u32(10,77) })
+            assertNull("omission must preserve an explicitly cleared selection", intake.navigation)
+            intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2) })
+            assertNull("cached entries are not arbitrary fallback selections", intake.navigation)
+            intake.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,listOf(99)) })
+            assertNull("unknown selected ID must not fall back to any cached entry", intake.navigation)
+            intake.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,listOf(7)) })
+            assertEquals("late explicit selection joins its cached definition", 2, intake.navigation?.maneuverType)
+            assertEquals(epoch, intake.routeMetadata?.epoch)
+        }
+    }
+
+    @Test fun eachEstimateExpiresWithoutBeingRenewedByOtherRouteFields() {
+        var now = 0L
+        val intake = CarPlayMetadataIntake { now }.apply { authenticate() }
+        intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2) })
+        intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)); u32(10,123); string(3,"Current"); u64(6,60); u32(7,1000) })
+        now = 29_000
+        intake.handle(Iap2Messages.buildRaw(0x5201) { u32(7,900) })
+        now = 30_000
+        intake.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,listOf(7)) })
+        assertEquals(2, intake.navigation?.maneuverType)
+        assertNull(intake.navigation?.distanceMeters)
+        assertNull(intake.navigation?.road)
+        assertNull(intake.navigation?.remainingSeconds)
+        assertEquals(900, intake.navigation?.remainingMeters)
+        now = 59_000; intake.tick()
+        assertNull(intake.navigation?.remainingMeters)
+        assertNotNull(intake.navigation)
+    }
+
+    @Test fun absentCurrentAtOwnershipDeadlineCannotReplayOldSelection() {
+        var now = 0L
+        val intake = CarPlayMetadataIntake { now }.apply { authenticate() }
+        intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2) })
+        intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)) })
+        val epoch = intake.routeMetadata?.epoch
+        now = 120_000
+        intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u32(10,44) })
+        assertNotEquals(epoch, intake.routeMetadata?.epoch)
+        assertNull(intake.navigation)
+        intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,3) })
+        assertNull("details cannot choose the expired selected ID", intake.navigation)
+        intake.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,listOf(7)) })
+        assertEquals(3, intake.navigation?.maneuverType)
+    }
+
+    @Test fun explicitCurrentOrEmptyAtOwnershipDeadlineCannotReuseExpiredCache() {
+        for (current in listOf(emptyList(), listOf(7))) {
+            var now = 0L
+            val intake = CarPlayMetadataIntake { now }.apply { authenticate() }
+            intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2) })
+            intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)) })
+            val epoch = intake.routeMetadata?.epoch
+            now = 120_000
+            intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,current) })
+            assertNotEquals(epoch, intake.routeMetadata?.epoch)
+            assertNull("expiry purges cache before applying current/empty delta", intake.navigation)
+            intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,3) })
+            if (current.isEmpty()) assertNull("empty selection stays empty despite fresh details", intake.navigation)
+            else assertEquals(3, intake.navigation?.maneuverType)
+        }
+    }
+
+    @Test fun unauthenticatedFramesCannotPrimeRouteOrManeuverCache() {
+        val intake = CarPlayMetadataIntake { 0L }
+        intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2) })
+        intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)) })
+        assertNull(intake.routeMetadata)
+        intake.authenticate()
+        intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)) })
+        assertNull(intake.navigation)
+    }
+
+    @Test fun quietValidSelectionSurvivesThirtySecondsAndOmittedCurrentDeltas() {
+        for (activeState in listOf(false, true)) {
+            var now = 0L
+            val intake = CarPlayMetadataIntake { now }.apply { authenticate() }
+            intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2); string(4,"Turn road") })
+            intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)); u32(10,350) })
+            val epoch = intake.routeMetadata?.epoch
+            now = 30_000; intake.tick()
+            assertEquals("quiet route is not an invalid selection", 2, intake.navigation?.maneuverType)
+            assertNull("estimates age independently of the selected instruction", intake.navigation?.distanceMeters)
+            now = 56_000
+            intake.handle(Iap2Messages.buildRaw(0x5201) { if (activeState) u8(1,1); u32(10,99) })
+            assertEquals(2, intake.navigation?.maneuverType)
+            assertEquals(99, intake.navigation?.distanceMeters)
+            assertEquals(epoch, intake.routeMetadata?.epoch)
+            now = 175_999; intake.tick()
+            assertEquals(2, intake.navigation?.maneuverType)
+            now = 176_000; intake.tick()
+            assertNull(intake.routeMetadata)
+        }
+    }
+
     @Test fun selectedIdOnlyRecoversAfterIncidentLengthGapWithoutRepeatedDetails() {
         var now = 0L
         val intake = CarPlayMetadataIntake { now }.apply { authenticate() }
@@ -12,7 +122,7 @@ class CarPlayMetadataIntakeTest {
         intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)); u32(10,350); u64(6,120); u32(7,1500) })
         val epoch = requireNotNull(intake.routeMetadata).epoch
         now = 30_110; intake.tick()
-        assertNull(intake.navigation)
+        assertNotNull("quiet selection survives estimate expiry", intake.navigation)
         assertEquals(epoch, intake.routeMetadata?.epoch)
         now = 56_000
         intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)) })
@@ -26,7 +136,7 @@ class CarPlayMetadataIntakeTest {
         assertEquals(epoch, intake.routeMetadata?.epoch)
     }
 
-    @Test fun absentCurrentFramesAndManeuverDetailsCannotReconfirmStaleSelection() {
+    @Test fun absentCurrentFramesRetainSelectionAndDetailsDoNotChooseAnotherId() {
         for (activeState in listOf(false, true)) {
             var now = 0L
             val intake = CarPlayMetadataIntake { now }.apply { authenticate() }
@@ -36,9 +146,9 @@ class CarPlayMetadataIntakeTest {
             now = 29_999; intake.tick()
             now = 30_000
             intake.handle(Iap2Messages.buildRaw(0x5201) { if (activeState) u8(1,1); u32(10,99) })
-            assertNull("absent current list is not fresh selection confirmation (active=$activeState)", intake.navigation)
+            assertEquals("omitted current list inherits selection (active=$activeState)", 2, intake.navigation?.maneuverType)
             intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,3) })
-            assertNull("details cannot revive a stale selection after route-only estimates", intake.navigation)
+            assertEquals("selected details can update a still-owned selection", 3, intake.navigation?.maneuverType)
             assertEquals(epoch, intake.routeMetadata?.epoch)
             now = 56_000
             intake.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,listOf(7)) })
@@ -47,14 +157,14 @@ class CarPlayMetadataIntakeTest {
         }
     }
 
-    @Test fun estimatesReceivedWhileSelectionExpiredStillExpireBeforeConfirmation() {
+    @Test fun estimatesExpireIndependentlyOfExplicitSelectionRefresh() {
         var now = 0L
         val intake = CarPlayMetadataIntake { now }.apply { authenticate() }
         intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2) })
         intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)) })
         now = 30_000
         intake.handle(Iap2Messages.buildRaw(0x5201) { string(3,"Pending road"); u32(10,99); u64(6,100); u32(7,1000) })
-        assertNull(intake.navigation)
+        assertNotNull(intake.navigation)
         now = 59_999; intake.tick()
         now = 60_000
         intake.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,listOf(7)) })
@@ -91,7 +201,7 @@ class CarPlayMetadataIntakeTest {
         }
     }
 
-    @Test fun retainedDefinitionsRemainBoundedAndProtectStaleSelectedId() {
+    @Test fun retainedDefinitionsRemainBoundedAndProtectQuietSelectedId() {
         var now = 0L
         val intake = CarPlayMetadataIntake { now }.apply { authenticate() }
         intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,7); u8(3,2) })
@@ -100,7 +210,7 @@ class CarPlayMetadataIntakeTest {
         val futureIds = (8..40).toList()
         for (id in futureIds) {
             intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,id); u8(3,3) })
-            assertNull("future details cannot revive stale selection", intake.navigation)
+            assertEquals("future details cannot replace selected instruction", 2, intake.navigation?.maneuverType)
         }
         val retained = (listOf(7) + futureIds).filter { id ->
             intake.handle(Iap2Messages.buildRaw(0x5201) { u16List(13,listOf(id)) })
@@ -199,8 +309,8 @@ class CarPlayMetadataIntakeTest {
             intake.handle(Iap2Messages.buildRaw(0x5202) { u16(1,8); u8(3,3); bytes(11,byteArrayOf(1)) })
             assertEquals(before, intake.routeMetadata)
             intake.tick()
-            assertNull(intake.navigation)
             if (deadline == 120_000L) assertNull(intake.routeMetadata)
+            else assertNotNull("estimate expiry must not discard selection", intake.navigation)
         }
     }
 
@@ -220,7 +330,7 @@ class CarPlayMetadataIntakeTest {
         assertEquals(3, intake.navigation?.maneuverType)
     }
 
-    @Test fun staleInstructionDegradesAtThirtySecondsButRouteExpiresAtTwoMinutesWithoutFreshRoute() {
+    @Test fun quietInstructionAndRouteExpireAtTwoMinutesDespiteManeuverTraffic() {
         var now = 0L
         val intake = CarPlayMetadataIntake { now }
         intake.authenticate()
@@ -230,11 +340,11 @@ class CarPlayMetadataIntakeTest {
         val epoch = requireNotNull(intake.routeMetadata).epoch
         now = 29_999; intake.tick(); assertNotNull(intake.navigation)
         now = 30_000; intake.tick()
-        assertNull("stale turn must disappear", intake.navigation)
+        assertNotNull("quiet selected turn has no invented 30s TTL", intake.navigation)
         assertNotNull("instruction expiry is not route termination", intake.routeMetadata)
         assertEquals(epoch, intake.routeMetadata?.epoch)
         details()
-        assertNull("maneuver-only traffic cannot revive stale route guidance", intake.navigation)
+        assertNotNull("details update the still-valid selected instruction", intake.navigation)
         now = 119_999; intake.tick(); assertNotNull(intake.routeMetadata)
         now = 120_000; intake.tick(); assertNull(intake.routeMetadata)
         route()
@@ -364,7 +474,7 @@ class CarPlayMetadataIntakeTest {
         assertEquals("Road",intake.navigation?.road)
         now = 30000
         intake.tick()
-        assertNull(intake.navigation)
+        assertNotNull(intake.navigation)
         intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,0) })
         intake.handle(Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(7)) })
         assertNull(intake.navigation) // previous route's cached index must not revive

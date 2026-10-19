@@ -12,6 +12,8 @@ data class VehiclePropertyObservation(
     val sequence: Long = 0,
     /** Discovered CarPropertyConfig mode (STATIC=0, ONCHANGE=1, CONTINUOUS=2), never requested rate. */
     val changeMode: Int? = null,
+    /** Actual serialized getProperty completion, not a fabricated sample heartbeat. */
+    val statusReadElapsedMs: Long? = null,
 )
 
 /**
@@ -122,7 +124,9 @@ sealed class ControlMessage {
 
     data class Pointer(val id: Int, val x: Float, val y: Float)
 
-    data class Gnss(val nmea: String) : ControlMessage()
+    /** Internal provenance only; public NMEA wire remains unchanged. Android fix time is Unix ms. */
+    data class Gnss(val nmea: String, val fixUnixMs: Long? = null,
+        val receivedUnixMs: Long? = null, val receivedElapsedMs: Long? = null) : ControlMessage()
 
     data class VehicleData(
         val speedKmh: Float? = null,

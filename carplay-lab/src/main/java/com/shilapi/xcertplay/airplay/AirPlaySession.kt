@@ -474,6 +474,23 @@ class AirPlaySession @JvmOverloads constructor(
         sendPendingNightModeLocked()
     }
 
+    /** No retained unlock: the source owner requalifies/replays at readiness.
+     * Firmware normalizes params.limitedUI and scopes params.uuid to a display.
+     * Secondary screens never inherit the main screen's Park unlock.
+     */
+    fun setLimitedUIIfEventReady(limited: Boolean, canUnlock: () -> Boolean): Boolean = synchronized(eventWriteLock) {
+        if (!config.drivingRestrictions || !encryptedEventReady) return@synchronized false
+        // Requalify AFTER acquiring the socket's writer lock: a queued unlock may have expired,
+        // lost its source/owner, or changed gear while another command held the writer.
+        val safeLimited = limited || !runCatching(canUnlock).getOrDefault(false)
+        fun send(uuid: String, value: Boolean) = sendCommandLocked(linkedMapOf(
+            "type" to "setLimitedUI", "params" to linkedMapOf("uuid" to uuid, "limitedUI" to value)))
+        val main = send(AirPlayInfoPlist.MAIN_UUID, safeLimited)
+        val secondary = if (config.cluster != null) send(AirPlayInfoPlist.ALT_UUID, true) else true
+        // A clamped unlock is not an acknowledged unlock; the bridge must re-evaluate its source.
+        main && secondary && safeLimited == limited
+    }
+
     private fun sendPendingNightModeLocked(): Boolean {
         val night = pendingNightMode ?: return true
         val sent = sendCommandLocked(

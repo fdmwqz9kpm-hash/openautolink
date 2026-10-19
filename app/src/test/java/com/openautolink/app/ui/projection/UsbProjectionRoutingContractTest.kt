@@ -25,7 +25,7 @@ class UsbProjectionRoutingContractTest {
     }
     @Test fun idleSavedAaUsbDoesNotInventAnInflightWirelessOwnerBeforeCableAutostart() {
         val vm = source("ui/projection/ProjectionViewModel.kt")
-        val startup = vm.substringAfter("fun startProjectionOnce()").substringBefore("private suspend fun releaseCarPlayUsbOwner()")
+        val startup = vm.substringAfter("fun startProjectionOnce()").substringBefore("private suspend fun releaseCarPlayUsbOwner(")
         assertTrue(startup.contains("val aaNormalTransport = preferences.directTransport.first()"))
         assertTrue(startup.contains("if (aaNormalTransport != AppPreferences.DIRECT_TRANSPORT_USB) connect()"))
     }

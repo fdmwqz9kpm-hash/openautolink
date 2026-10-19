@@ -4,6 +4,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 
 /** One atomic, non-secret next-session configuration. Never a connection/admission lease. */
 @Serializable
@@ -11,6 +13,10 @@ data class CarPlaySettings(
     val enabled: Boolean = true,
     /** Independent normal CarPlay transport. Missing/invalid values are wired, never wireless opt-in. */
     val connectionMode: String = "usb",
+    /** Explicit next-session ordinary CarPlay limited-UI capability; no shipping build opt-in needed. */
+    val drivingRestrictionsEnabled: Boolean = false,
+    /** Parked-use override only. Never changes raw VHAL gear, Android Auto, or parked video. */
+    val alwaysInPark: Boolean = false,
     val phoneAddress: String = "",
     val peerAddress: String = "",
     val interfaceName: String = "ap_br_swlan0",
@@ -115,7 +121,16 @@ data class CarPlaySettings(
     companion object {
         private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
         fun decode(record: String?): CarPlaySettings =
-            record?.let { runCatching { json.decodeFromString<CarPlaySettings>(it) }.getOrNull() }
+            record?.let { runCatching {
+                val fields = json.parseToJsonElement(it).jsonObject
+                // Serializer accepts quoted Boolean literals; safety choices require actual JSON Booleans.
+                for (key in listOf("alwaysInPark", "drivingRestrictionsEnabled")) {
+                    fields[key]?.let { value ->
+                        require(value is JsonPrimitive && !value.isString && value.booleanOrNull != null)
+                    }
+                }
+                json.decodeFromString<CarPlaySettings>(it)
+            }.getOrNull() }
                 ?.let { stored ->
                     // Restore through the receiver's canonical source-backed policy. A valid stored
                     // preference is not permission to advertise it without exact device qualification.

@@ -94,6 +94,33 @@ fun CarPlaySettingsSection(viewModel: SettingsViewModel) {
 
     val draft = settings
     // Local echo is recreated from private ViewModel memory when returning to this tab.
+    val restrictionControl = com.openautolink.app.carplay.CarPlayRestrictionPolicy.from(draft).enabled
+    Text("CarPlay UI restrictions", style = MaterialTheme.typography.titleMedium)
+    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Vehicle-based UI restrictions", Modifier.weight(1f))
+        Switch(checked = restrictionControl,
+            enabled = !saving && loaded && !com.openautolink.app.BuildConfig.CARPLAY_DRIVING_RESTRICTIONS,
+            onCheckedChange = { value -> viewModel.updateCarPlayDraft {
+                it.copy(drivingRestrictionsEnabled = value, alwaysInPark = if (value) it.alwaysInPark else false)
+            } }, modifier = Modifier.testTag("carPlayDrivingRestrictions"))
+    }
+    Text("When enabled, only fresh, valid vehicle Park unlocks the main-screen keyboard and lists. Missing or invalid gear stays restricted. Save & Reconnect applies changes.",
+        style = MaterialTheme.typography.bodySmall)
+    if (com.openautolink.app.BuildConfig.CARPLAY_DRIVING_RESTRICTIONS) {
+        Text("This build keeps restriction control enabled.", style = MaterialTheme.typography.bodySmall)
+    }
+    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Always in Park")
+            Text("CarPlay only · parked use", style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = draft.alwaysInPark && restrictionControl,
+            enabled = !saving && loaded && restrictionControl,
+            onCheckedChange = { value -> viewModel.updateCarPlayDraft { it.copy(alwaysInPark = value) } },
+            modifier = Modifier.testTag("carPlayAlwaysInPark"))
+    }
+    Text("Use only while safely parked. Overrides CarPlay main-screen UI restrictions even when gear is missing or not Park; it does not change actual vehicle gear, Android Auto, secondary displays or video permissions. Turn off to restore vehicle-based restrictions. Enable Vehicle-based UI restrictions above first. Changes require Save & Reconnect.",
+        style = MaterialTheme.typography.bodySmall)
     var password: String? by remember { mutableStateOf(viewModel.pendingCarPlayPassword()) }
     var advanced by remember { mutableStateOf(false) }
     var phoneMenu by remember { mutableStateOf(false) }

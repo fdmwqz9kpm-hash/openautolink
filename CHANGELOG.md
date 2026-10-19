@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.534 — microphone diagnostics and connection recovery
+
+- Add an explicit, foreground-only parked microphone diagnostic with passive input inspection and separate channel, sample-rate and preferred-input comparisons. Report requested/recorder/client/device formats, route stability and numeric signal aggregates without recording or uploading audio.
+- Require fresh actual Park on automotive devices, explicit consent, no active/connecting projection and safe recording policy. Cancel on background/tab exit, policy loss or deadlines; retain capture exclusion until the recorder actually releases. Normal CarPlay and Android Auto capture settings are unchanged when the tool is idle.
+- Save only the latest completed numeric result for the existing manual log uploader. A completed procedure or nonzero samples do not establish speech recognition or caller audibility.
+- Preserve useful wired CarPlay failure guidance when Android Auto resumes. Reject a fenced USB attachment before another destructive handoff and avoid the repeated picker loop; retain the separate explicit permission-denial retry path. The initial network-control timeout remains unresolved.
+- Restore persistent amber/green/red upload status, clear success wording and safe failure codes in the single OAL menu. Keep the upload action visible and prevent duplicate uploads.
+- Physical tablet testing confirmed channel/rate comparisons, stable route reporting, absent preferred-input rejection, Home cancellation, consent reset and subsequent capture reservation availability. GM input mapping, car microphone recovery and two-way CarPlay call audio remain unverified.
+- No companion runtime changes. Distribution remains the original and Groups 2–5 internal listings; Community and tester lists are unchanged.
+
+## 0.1.532 — cluster guidance and vehicle data
+
+### Cluster guidance and maneuver coverage
+- Withdraw unavailable guidance instead of sending a loading Trip that GM labels “Rerouting”; retain source-route identity so a later usable instruction can restart guidance. Preserve deliberate host stop, arrival and generation ownership boundaries.
+- Retain CarPlay's selected maneuver across omitted-current route deltas and quiet intervals within the finite route lifetime. Explicit empty selection, route replacement, stop and arrival still invalidate guidance. Expire dynamic estimates independently rather than letting unrelated fields renew them.
+- Apply AndroidX roundabout constraints by maneuver family: generic entry/exit cannot carry an exit ordinal; combined types require a sourced positive ordinal. Unsupported direction or geometry does not become an invented left turn, straight arrow or exit 1.
+- Expand original directional vector coverage and legacy Android Auto ferry/roundabout mapping; clear old turn artwork and maneuver-only fields when a new turn arrives while preserving distance-only delta behavior.
+
+### Vehicle metadata, GPS and optional CarPlay restrictions
+- Supply source-qualified vehicle identity, connector metadata and outside temperature through the existing production adapters. Retain missing/unsupported outcomes; do not invent EV profiles, capacities or charging powers.
+- Keep GPS provider/source timestamps and freshness distinct from forwarding time. Physical phone GPS-source selection remains unverified.
+- Add independently saved, default-OFF vehicle-based CarPlay UI restrictions and a separate default-OFF Always in Park override. Missing/stale gear stays restricted unless the explicit override is enabled. Neither option changes actual gear, Android Auto policy or video permission.
+- Use the same observation receipt sample for gear status authority, avoiding a second clock sample invalidating an otherwise valid observation.
+
+### Verification and limitations
+- Full app, receiver and companion debug/release suites: 4,576 test executions, zero failures/errors, two existing optional private-archive replay skips. Independent source review, real Android vector rendering, both native ABI builds, and app/receiver release lint passed.
+- Physical cluster recovery/glyph rendering, vehicle-data/phone GPS-source consumption and restrictions remain vehicle-specific acceptance gates; software verification does not claim these reported failures are resolved on every vehicle. Direct-AA numeric roundabout angle rendering remains deferred until its source convention is proved; current phone artwork and neutral fallbacks remain available.
+- No companion behavior changes. Internal Play distribution covers the original and four existing capacity-group listings only; the paused Community track and tester lists are unchanged.
+
+## 0.1.530
+
+### Multiple iPhones with CarPlay
+- Remove the persistent first-iPhone-only pairing restriction. Preserve the existing receiver identity and remembered phone keys when another iPhone connects; no app-data reset is required.
+- Allow one additional cryptographically verified phone within each bounded, authorized USB or wireless bootstrap. Keep existing-key replacement forbidden, trusted reconnects available, exact transport/owner checks and one active projection session.
+- USB continues to use the attached phone rather than a saved preferred-phone list. WPP continues to follow the incoming phone selected by the vehicle; its identity correlation and active-session protection are unchanged.
+- Wireless CarPlay retains explicit bootstrap selection. This does not add automatic wireless-phone arbitration, resolve GM wireless ingress, change Bluetooth profiles, or fix the separate CarPlay audio issues.
+- Add persistence/restart, A → B → A cryptographic verification, enrollment deadline/capacity and real receiver/socket pairing regressions. Physical two-iPhone vehicle acceptance remains pending.
+- No companion behavior changes; the matching companion APK is version-aligned only.
+
 ## 0.1.528
 
 ### USB permission retry after explicit selection

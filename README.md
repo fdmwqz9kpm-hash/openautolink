@@ -21,13 +21,13 @@ Android Auto and CarPlay share one app, with independent connection settings. **
 [![Release](https://github.com/mossyhub/openautolink/actions/workflows/release-apk.yml/badge.svg?event=release)](https://github.com/mossyhub/openautolink/releases/latest)
 
 > [!IMPORTANT]
-> To use OpenAutoLink, build the app and publish it through your own Google Play Console developer account. Locked GM vehicles require Google Play delivery; APK sideloading is not supported.
+> Install on a locked GM vehicle through your own Google Play Console app's **dedicated Android Automotive OS Internal Test**. APK sideloading is not supported on these head units.
 >
-> CarPlay requires compatible accessory authentication files that you are authorized to use. These are not included in the public build; building the app alone does not enable CarPlay.
+> **Create your personal AAB at [oal.mossyg.com](https://oal.mossyg.com)** in a desktop Chrome or Edge browser—no source editing, desktop download or Android SDK setup.
 >
-> As I publish changes, you’ll need to pull the latest source, rebuild, and publish your own updates.
+> Save the required encrypted web identity backup for updates. CarPlay also needs your own compatible, authorized authentication pair; the builder does not supply it.
 >
-> [Build guide](docs/build-aab.md) · [Installation guide](docs/install-gm.md) · [CarPlay authentication](docs/carplay-private-mfi-assets.md)
+> [Create your AAB](docs/build-aab.md) · [Internal Test installation](docs/install-gm.md) · [CarPlay authentication](docs/carplay-private-mfi-assets.md)
 
 ## Choose your phone and connection
 
@@ -65,7 +65,7 @@ Check the source revision and release notes for your installed build. USB hot-pl
 
 - No iPhone companion app or additional projection hardware.
 - **USB projection**, with wireless connection retained separately for development.
-- **Video, touch, music and phone calls over USB**. Incoming and outgoing calls were confirmed on the maintainer's Blazer EV without vehicle Bluetooth. [Leave the iPhone unpaired from vehicle Bluetooth](#usb-1) to avoid repeated music pauses.
+- **Video, touch, music and phone calls over USB**. Call operation was reported without vehicle Bluetooth, but later tests exposed silent uplink; **reliable two-way call audio remains unverified**. [Leave the iPhone unpaired from vehicle Bluetooth](#usb-1) to avoid repeated music pauses.
 - **Multi-touch gestures**, including map pinch-to-zoom.
 - **Adjustable video quality, Fit to window and safe-control calibration** for wide or curved screens.
 - **Music information and artwork on supported vehicle displays**. Cluster route guidance is still being refined.
@@ -75,13 +75,14 @@ Check the source revision and release notes for your installed build. USB hot-pl
 
 ### Car app on a locked GM vehicle
 
-To use OpenAutoLink, build the app and publish it through your own Google Play Console developer account. Locked GM vehicles require Google Play delivery; APK sideloading is not supported.
+1. [Create your AAB on the website](docs/build-aab.md#create-your-aab) and save the required encrypted identity backup.
+2. Follow the [Internal Test installation guide](docs/install-gm.md): register with Google, create a free app, select **dedicated Android Automotive OS → Internal testing**, upload, enroll the car's Google account, and select the **car** in Google's web install picker.
 
-CarPlay requires compatible accessory authentication files that you are authorized to use. These are not included in the public build; building the app alone does not enable CarPlay.
+Check Google's **US$25 one-time registration fee and Android-device verification requirement for new personal accounts before paying**, especially if you only own an iPhone. A completed build does not prove Play acceptance or car eligibility.
 
-As I publish changes, you’ll need to pull the latest source, rebuild, and publish your own updates.
+For CarPlay, include your own [authorized authentication pair](docs/carplay-private-mfi-assets.md). For updates, restore your latest web backup, keep the **same application ID and upload key**, and upload a higher-version AAB to the same Internal Test. [Desktop builder documentation](docs/desktop-builder.md) remains available, but desktop downloads are not published yet.
 
-Follow the [build guide](docs/build-aab.md) and [installation guide](docs/install-gm.md). See [CarPlay authentication](docs/carplay-private-mfi-assets.md) for the separate file requirement. Preserve your application ID and signing setup for later updates. The car itself needs internet-connected Wi-Fi or its data service; [an OnStar data plan is not required](#car-internet-no-onstar-data-plan-required).
+The car itself needs internet-connected Wi-Fi or its data service; [an OnStar data plan is not required](#car-internet-no-onstar-data-plan-required).
 
 The car APK on [GitHub Releases](https://github.com/mossyhub/openautolink/releases/latest) is for AAOS systems/emulators that permit APK installation. **It cannot be sideloaded onto a locked GM production head unit.**
 
@@ -104,7 +105,7 @@ For wireless Android Auto, install `openautolink-companion-vX.Y.Z.apk` from the 
 
 ### iPhone
 
-No OAL iPhone companion is required. For **USB**, connect a data-capable cable and **leave the iPhone unpaired from vehicle Bluetooth** to avoid GM Bluetooth competing with CarPlay and constantly pausing media. Music and calls work over USB; car Wi-Fi fields are not required for wired startup. For **wireless**, pair through the **car's system Bluetooth settings** and configure the wireless fields below. USB Trust approval is separate from Bluetooth pairing. Supply the [required CarPlay authentication files](docs/carplay-private-mfi-assets.md) separately.
+No OAL iPhone companion is required. For **USB**, connect a data-capable cable and **leave the iPhone unpaired from vehicle Bluetooth** to avoid GM Bluetooth competing with CarPlay and constantly pausing media. USB carries CarPlay audio, but call microphone reliability remains under investigation; car Wi-Fi fields are not required for wired startup. For **wireless**, pair through the **car's system Bluetooth settings** and configure the wireless fields below. USB Trust approval is separate from Bluetooth pairing. Supply the [required CarPlay authentication files](docs/carplay-private-mfi-assets.md) separately.
 
 ### Other AAOS systems
 
@@ -177,15 +178,31 @@ If you previously turned off iPhone projection, OAL retains that choice. Only in
 3. Connect the iPhone to a data-capable head-unit USB port with a data-capable cable. If another projection is active, choose **Switch** to attempt temporary USB takeover.
 4. [Tap **OK** on both GM USB access prompts every time](#gm-usb-prompts--android-auto-and-carplay), even if you saved the choice. Accept OAL's separate local VPN consent when requested. If the iPhone asks to trust the connection, unlock it and approve **Trust** on the iPhone itself.
 
-**Music and calls work over USB without vehicle Bluetooth.** The maintainer confirmed music playback plus both outgoing and incoming CarPlay calls on the 2024 Chevrolet Blazer EV with the iPhone disconnected from vehicle Bluetooth. This is a setup correction, not a requirement to turn off the car's entire Bluetooth adapter. **Do not apply it to wireless Android Auto:** keep that Android phone's required Bluetooth pairing and **Phone calls** profile enabled.
+**Leave the iPhone unpaired to avoid competing Bluetooth playback control.** Music and call operation were reported on the maintainer's Blazer EV, but later incoming-call tests found silent microphone input even with CarPlay selected and caller playback working. **Two-way call microphone reliability is not yet verified**; see [call limitations](docs/phone-calls.md). This is a setup correction, not a requirement to turn off the car's entire Bluetooth adapter. **Do not apply it to wireless Android Auto:** keep that Android phone's required Bluetooth pairing and **Phone calls** profile enabled.
 
 USB CarPlay does not require Bluetooth pairing or Wi-Fi setup. The VPN permission is used locally for the USB connection—not an Internet VPN service. Another active VPN can conflict. USB access and permission support vary by head unit.
+
+OAL can remember more than one iPhone's CarPlay trust. Connect the iPhone you want to use and approve its own permission/Trust prompts; you do not need to erase OAL's settings or remove the previous iPhone. Only one phone projects at a time. WPP phone selection remains managed by the vehicle's Bluetooth system, not an OAL preferred-phone list.
 
 ### Wireless CarPlay
 
 Wireless CarPlay is still in development and is not working in the maintainer's vehicle. Use USB for now. Advanced wireless configuration is covered in the [network guide](docs/carplay-network-contract.md).
 
-### Video and display
+### CarPlay UI restrictions (optional)
+
+While parked, open **Settings → Connection → Normal connections → CarPlay → CarPlay UI restrictions**.
+**Vehicle-based UI restrictions** is saved independently of Android Auto and defaults **OFF**.
+Enable it to declare keyboard/list restrictions and allow the main-screen UI only with fresh,
+valid vehicle Park information. Missing/stale gear remains restricted. This policy is not yet
+validated on every vehicle, so ordinary builds do not enable it automatically.
+
+**Always in Park** is a separate CarPlay override, also default **OFF**, available when restriction
+control is enabled. It releases main-screen keyboard/list restrictions even without Park information;
+use it only while safely parked. It does not change actual gear, Android Auto settings, secondary
+displays or video permissions. Tap **Save & Reconnect** to apply either choice to a fresh session.
+No special build flag is needed. See the [policy and validation limits](docs/carplay-driving-restriction-policy.md).
+
+### Video and display controls
 
 - New CarPlay settings default to **Automatic** resolution targeting a decoder-qualified **1440p-class** image and **Codec → Automatic (H.264 + qualified HEVC)**, with qualified lower-detail fallbacks. Saved video choices are retained. If you choose manual settings, open **OAL → Settings → Video → CarPlay**, select **Manual** under **Resolution / detail**, then choose **1440p** (recommended) or try **4K** if supported. **Fit to window (standard detail tiers)** keeps the selected detail tier at the available window aspect without stretching; custom resolutions retain their chosen aspect ratio. Tap **Save & Reconnect** to apply.
 - **Codec → Automatic (H.264 + qualified HEVC)** is the default for new CarPlay settings. If you choose manual video settings, we recommend this codec setting with **1440p** for the best balance of detail and performance. It offers HEVC only when the exact size/rate qualifies and retains H.264; it does **not** force the iPhone to use HEVC or change your resolution. Existing saved H.264 choices are preserved, so users with saved H.264 settings should select Automatic explicitly. If connection fails, select **H.264** and **Save & Reconnect**. 4K adds bandwidth and processing demand; return to 1440p if it stutters. Blurry video alone does not establish the negotiated resolution.
@@ -196,7 +213,7 @@ Wireless CarPlay is still in development and is not working in the maintainer's 
 
 ### Authentication and source builds
 
-Public GitHub APKs and source builds omit the CarPlay authentication files and require your own compatible files. OAL is **not an Apple-certified CarPlay product**. Never publish authentication files or signing keys. See the [authentication and build policy](docs/carplay-private-mfi-assets.md) for requirements, provenance and redistribution limitations.
+Public GitHub APKs and ordinary source builds omit the CarPlay authentication files and require your own compatible, authorized pair. OAL is **not an Apple-certified CarPlay product**. Bundled files are extractable; never publish authentication files or signing keys. See [CarPlay authentication](docs/carplay-private-mfi-assets.md) for the exact file formats and authorization limits.
 
 ## Adjust text, icons and UI size
 
@@ -224,7 +241,7 @@ Under **CarPlay → CarPlay UI scale**:
 
 ## Keep incoming and active calls in Android Auto or CarPlay on GM
 
-For **USB CarPlay**, leave the iPhone unpaired from vehicle Bluetooth: incoming and outgoing calls work over USB, and avoiding the Bluetooth connection prevents repeated music pauses. The native Bluetooth Phone-app settings below are not required for that Bluetooth-free CarPlay setup.
+For **USB CarPlay**, leave the iPhone unpaired from vehicle Bluetooth: call audio uses the CarPlay path, and avoiding the Bluetooth connection prevents repeated music pauses. Car microphone reliability is still under investigation. The native Bluetooth Phone-app settings below are not required for that Bluetooth-free CarPlay setup.
 
 For **Android Auto**, or when managing native GM call-screen behavior, use these vehicle settings to stop GM's native Phone app from covering the projected incoming-call and in-call controls on the center display:
 
@@ -295,6 +312,8 @@ Optional diagnostic-log uploads and EV-profile downloads are separate; see the [
 
 ## Diagnostics and useful test reports
 
+For silent car microphone reports, the opt-in **Diagnostics → Microphone** tool compares local capture channels, sample rates and an available named input while parked. It stores only the latest numeric summary for manual log upload—never microphone audio. It is a diagnostic, not a call-audio fix or phone-microphone selector. See [parked microphone test instructions](docs/microphone-diagnostic.md).
+
 Enable OAL file logging **before** reproducing a problem, then use the configured log-upload control. Each app uploads **only its own logs**: the car upload does not collect companion or iPhone logs. Consecutive uploads can contain overlapping sessions.
 
 Include:
@@ -311,7 +330,8 @@ Never post passwords, accessory credentials, upload invitation tokens or account
 
 User guides:
 
-- [GM installation](docs/install-gm.md) and [personal AAB builder](docs/build-aab.md)
+- [Create your AAB on the website](docs/build-aab.md) and [Internal Test installation on GM](docs/install-gm.md)
+- [Desktop AAB builder preview](docs/desktop-builder.md) (downloads not yet available)
 - [Wireless Android Auto](docs/wireless-wpp.md)
 - [Compatibility](docs/compatibility.md), [EV range estimates](docs/ev-range.md) and [phone calls](docs/phone-calls.md)
 - [Troubleshooting](docs/troubleshooting.md) and [privacy policy](docs/privacy-policy.md)
@@ -319,6 +339,7 @@ User guides:
 Developer guides:
 
 - [Architecture](docs/architecture.md)
+- [Advanced Docker build fallback](docs/manual-build.md)
 - [CarPlay authentication/build policy](docs/carplay-private-mfi-assets.md)
 - [Connection modes and USB switching](docs/usb-hotplug-independent-protocol-modes.md)
 - [CarPlay networking](docs/carplay-network-contract.md), [display sizing](docs/carplay-window-safe-area-contract.md) and [cluster integration](docs/carplay-cluster-metadata-handoff.md)

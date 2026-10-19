@@ -80,6 +80,7 @@ class ProjectionOverlayLayoutTest {
                 openMenu()
                 tapAction(label)
                 compose.runOnIdle { assertEquals(label, clicked.lastOrNull()) }
+                if (label == "Upload Logs") tapAction("Close")
             }
             compose.runOnIdle { assertEquals(labels, clicked) }
         }

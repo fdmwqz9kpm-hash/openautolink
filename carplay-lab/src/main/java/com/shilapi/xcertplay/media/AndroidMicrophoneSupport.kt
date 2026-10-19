@@ -55,7 +55,8 @@ object AndroidMicrophoneSupport {
         configured?.let { return it }
         // A recorder/encoder qualified for 48k MIC says nothing about 24k VOICE_RECOGNITION.
         val rates = MicrophoneSource.values().associateWith { source ->
-            setOf(24000, 48000).filter { rate -> qualifies(source, rate) }.toSet()
+            // A diagnostic reservation is temporary, not a negative capability to cache.
+            setOf(24000, 48000).filter { rate -> qualifies(source, rate) ?: return emptyMap() }.toSet()
         }
         val names = runCatching { OpusEncoder.inventory() }.getOrDefault(emptyList())
         val result = linkedMapOf<Long, String>()
@@ -74,7 +75,8 @@ object AndroidMicrophoneSupport {
         return if (permissionGranted()) result else emptyMap()
     }
 
-    private fun qualifies(source: MicrophoneSource, rate: Int): Boolean {
+    private fun qualifies(source: MicrophoneSource, rate: Int): Boolean? {
+        val lease = MicrophoneCaptureFence.tryNormal() ?: return null
         var record: AudioRecord? = null
         var valid = false
         try {
@@ -82,7 +84,10 @@ object AndroidMicrophoneSupport {
             valid = record.state == AudioRecord.STATE_INITIALIZED && record.sampleRate == rate &&
                 record.channelCount == 1 && record.audioFormat == AudioFormat.ENCODING_PCM_16BIT
         } catch (_: Exception) { valid = false }
-        finally { try { record?.release() } catch (_: Exception) { valid = false } }
+        finally {
+            try { record?.release(); lease.release() }
+            catch (_: Exception) { valid = false } // retain fence when release is unacknowledged
+        }
         return valid && permissionGranted()
     }
 

@@ -20,6 +20,25 @@ class LogUploaderTest {
     @get:Rule val temp = TemporaryFolder()
     @After fun cleanup() = unmockkAll()
 
+    @Test fun preflightFailuresHaveStableCodesWithoutOpeningAnyConnection() {
+        val context = mockk<Context>()
+        var connections = 0
+        val uploader = LogUploader(context, { connections++; error("must not connect") }, { true })
+        assertEquals(UploadFailureCode.NOT_CONFIGURED,
+            (uploader.upload("", "token", "fixture") as UploadResult.Failure).code)
+        assertEquals(UploadFailureCode.HTTPS_REQUIRED,
+            (uploader.upload("http://logs.example.test/upload", "token", "fixture") as UploadResult.Failure).code)
+        every { context.getExternalFilesDirs(null) } returns emptyArray()
+        assertEquals(UploadFailureCode.NO_LOGS,
+            (uploader.upload("https://logs.example.test/upload", "token", "fixture") as UploadResult.Failure).code)
+        every { context.getExternalFilesDirs(null) } throws java.io.IOException("private-token /private/path")
+        val snapshot = uploader.upload("https://logs.example.test/upload", "token", "fixture") as UploadResult.Failure
+        assertEquals(UploadFailureCode.SNAPSHOT, snapshot.code)
+        assertFalse(snapshot.reason.contains("private"))
+        assertNull(snapshot.httpStatus)
+        assertEquals(0, connections)
+    }
+
     @Test fun manualUploadFlushesBeforeSelectionStreamsZipAndRetainsSourcesOnRejection() {
         val base = temp.newFolder("volume")
         val logs = File(base, "openautolink/logs").apply { mkdirs() }
@@ -48,6 +67,8 @@ class LogUploaderTest {
         })
         val result = uploader.upload("https://logs.example.test/upload", "secret-test-token", "test-car")
         assertTrue(result is UploadResult.Failure)
+        assertEquals(UploadFailureCode.HTTP, (result as UploadResult.Failure).code)
+        assertEquals(503, result.httpStatus)
         assertTrue(disconnected)
         assertTrue(source.exists())
         assertTrue(cache.listFiles()!!.isEmpty())

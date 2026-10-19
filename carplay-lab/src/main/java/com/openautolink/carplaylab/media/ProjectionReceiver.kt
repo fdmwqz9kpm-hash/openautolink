@@ -32,11 +32,12 @@ class ProjectionReceiver(
     surface: Surface,
     private val mfi: MfiAuthenticator,
     display: CarPlayDisplayPreferences = CarPlayDisplayPreferences(),
-    // Production cannot enroll until the selected BT link proves the controller key. Bench stays explicit.
+    // Production enrollment requires a bounded, authenticated bootstrap. Bench stays explicit.
     private val trustedOnly: Boolean = false,
     private val runtimeCarDataFactory: ((AirPlaySession, (Iap2Frame) -> Unit, (String) -> Unit) -> RuntimeCarDataLink)? = null,
     private val runtimeMetadataFactory: ((AirPlaySession, (String) -> Unit) -> com.openautolink.carplaylab.metadata.RuntimeMetadataLink)? = null,
     private val wired: Boolean = false,
+    private val drivingRestrictions: Boolean = false,
     private val onStatus: (String) -> Unit,
 ) : Closeable {
     init {
@@ -136,7 +137,8 @@ class ProjectionReceiver(
         }.use { it.readBytes() }))
     private fun sessionConfig(): AirPlayConfig =
         benchReceiverConfig(btMac, port, microphoneCapability, displayConfiguration).copy(
-            hevc = videoSelection.hevcOffered, oemLabel = "OpenAutoLink", icons = oemIcons)
+            hevc = videoSelection.hevcOffered, oemLabel = "OpenAutoLink", icons = oemIcons,
+            drivingRestrictions = drivingRestrictions)
     private val engine = CarPlayMediaEngine(sink, microphoneEnabled = microphoneCapability.available,
         onDiagnostic = { session, message ->
             if (!closed.get() && !admissionRevoked.get() && session in sessions) status(message)
@@ -206,11 +208,12 @@ class ProjectionReceiver(
         runtimeIdentification = config.copy(locationInformationEnabled = false, vehicleStatusEnabled = false, vehicleSpeedEnabled = false)
     }
 
-    /** Explicit selected + MFi + native/OAL opt-in + real phone wireless request authorization.
+    /** Exact USB or selected wireless bootstrap has completed MFi authentication and consent.
+     * Authorize at most one additional verified controller, without replacing existing phone trust.
      * No cross-transport key-binding guarantee is claimed; default remains trusted reconnect only. */
-    fun authorizeFirstEnrollment(windowMillis: Long) = synchronized(lock) {
+    fun authorizeControllerEnrollment(windowMillis: Long) = synchronized(lock) {
         check(!closed.get() && !admissionRevoked.get() && server == null && trustedOnly)
-        require(trustedControllers.isEmpty() && windowMillis in 1..120_000)
+        require(windowMillis in 1..120_000)
         firstEnrollmentWindowMillis = windowMillis
     }
 
@@ -234,7 +237,7 @@ class ProjectionReceiver(
         check(runtimeIdentification != null) { "Set exact transport identification before start" }
         status("BENCH_DIAG displayOffer codec=H264 width=${displayConfiguration.width} height=${displayConfiguration.height} fps=${displayConfiguration.fps} fallback=${displaySelection.usedFallback}")
         val admission = try {
-            require(!trustedOnly || trustedControllers.size == 1 || firstEnrollmentWindowMillis > 0) {
+            require(!trustedOnly || trustedControllers.isNotEmpty() || firstEnrollmentWindowMillis > 0) {
                 "Existing controller trust or explicit first-enrollment authorization required"
             }
             require(!trustedOnly || admissionNetwork != null) { "Trusted admission requires exact local and peer policy" }
@@ -440,19 +443,34 @@ class ProjectionReceiver(
             true
         } catch (_: RejectedExecutionException) { tunnels.remove(session, channel); runtimeOwner = null; channel.close(); false }
     }
+    private val mediaPlayEpoch = java.util.concurrent.atomic.AtomicLong()
     /** Queue only for the exact authenticated metadata owner; queue admission is not phone receipt. */
     fun mediaCommand(session: AirPlaySession, index: Int): Boolean {
-        fun current() = currentMediaOwner(session)
+        val playEpoch = mediaPlayEpoch.get()
+        fun current() = currentMediaOwner(session) && (index != 1 || playEpoch == mediaPlayEpoch.get())
         if (index !in 1..5) { commandQueue(0, "declined", "invalid-index"); return false }
         if (!current()) { commandQueue(index, "declined", "stale-owner"); return false }
+        if (index == 2) {
+            // Cancel intent at ingress even if the bounded HID worker is blocked/full.
+            mediaPlayEpoch.incrementAndGet()
+            sink.cancelPendingMediaPlay()
+        }
         return try {
             input.execute {
                 // Neither a Binder focus request nor an event write may own the lifecycle monitor.
                 // Revalidate the exact authenticated owner after focus, which can outlast revocation.
                 if (!current()) { commandQueue(index, "declined", "stale-owner"); return@execute }
-                val focused = index != 1 || sink.requestFocusForUserPlay()
-                if (index == 1) status("media stage=media-focus-recovery reason=user-play result=${if (!current()) "stale-owner" else if (focused) "permitted" else "denied"}")
-                val sent = focused && current() && session.sendMedia(index)
+                val disposition = if (index == 1) sink.prepareUserPlay(::current) else null
+                if (disposition != null) {
+                    val live = current()
+                    status("media stage=media-play-disposition result=${if (live) disposition.token else "stale-owner"} " +
+                        "transport=${if (live && disposition.transportPermitted) "permitted" else "withheld"} " +
+                        "output=${if (live && disposition.outputPermitted) "permitted" else "withheld"}")
+                    // Retain old receipts for actual permission/denial, never label deferral a grant.
+                    if (!live || disposition.outputPermitted || !disposition.transportPermitted)
+                        status("media stage=media-focus-recovery reason=user-play result=${if (!live) "stale-owner" else if (disposition.outputPermitted) "permitted" else "denied"}")
+                }
+                val sent = (disposition?.transportPermitted != false) && current() && session.sendMedia(index)
                 status("media stage=media-control index=$index outcome=${if (sent) "sent" else "failed"}")
             }
             commandQueue(index, "accepted", "admitted")

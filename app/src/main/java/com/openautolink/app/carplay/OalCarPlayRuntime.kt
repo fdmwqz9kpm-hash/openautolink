@@ -56,6 +56,7 @@ class CarPlayRuntimeConfig(
     val networkFamily: String = "auto",
     val apSecurity: String = "wpa2",
     val localAddress: String = "",
+    val restrictionPolicy: CarPlayRestrictionPolicy = CarPlayRestrictionPolicy.from(com.openautolink.app.data.CarPlaySettings()),
 )
 
 /** Actual OAL Surface adapter for the copied receiver. There is no Activity/Intent bootstrap.
@@ -302,10 +303,12 @@ class OalCarPlayRuntime(
                 val qualifiedGps = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
                     runCatching { context.getSystemService(LocationManager::class.java)?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true }.getOrDefault(false)
                 OalCarPlayIntakeLink(qualifiedGps, OalCarPlayVehicleSnapshotAdapter(),
-                    OalCarPlayGnssSnapshotAdapter(SystemClock::elapsedRealtime) { sink ->
+                    OalCarPlayGnssSnapshotAdapter(SystemClock::elapsedRealtime, requireSourceTime = true) { sink ->
                         GnssForwarderImpl(context.applicationContext, sink, true)
                     }, SystemClock::elapsedRealtime, CarPlayAppearanceBridge(),
-                    session::setNightModeIfEventReady, send, receipt)
+                    session::setNightModeIfEventReady, send, receipt,
+                    restrictionPolicy = config.restrictionPolicy,
+                    sendLimitedUI = session::setLimitedUIIfEventReady)
             }, runtimeMetadataFactory = { session, receipt -> own {
                 active()
                 val metadata = OalCarPlayMetadataLink(SystemClock::elapsedRealtime, receipt,
@@ -318,7 +321,7 @@ class OalCarPlayRuntime(
                             ?.carBluetoothConnectionObserver?.subscribeEvidence(listener)
                     }.getOrNull()
                 }, receipt)
-            } }, onStatus = ::status) }
+            } }, drivingRestrictions = config.restrictionPolicy.enabled, onStatus = ::status) }
         // Log the actual decoder-qualified offer, not an earlier requested preset or coded viewport.
         active()
         onDisplayQualified(projection.displayConfiguration)
@@ -332,30 +335,31 @@ class OalCarPlayRuntime(
         var selectedConsentRequest: Iap2Frame? = null
         var selectedTransportNotification: Iap2Frame? = null
         connectionStage("enrollment")
-        if (projection.requiresControllerEnrollment) {
-            // The existing explicit OAL CarPlay enable/selection supplies accessory-side consent.
-            // Automatic setup also waits for the phone's wireless service request. The user's
-            // explicit joined-AP/numeric-peer fallback supplies the alternative setup choice.
-            // Neither path proactively discloses credentials or treats a generic bond as consent.
-            if (network.manualPeer == null) {
-                status("carplay-enrollment stage=awaiting-selected-bootstrap-request")
-                val consent = WirelessEnrollmentConsentGate()
-                val consentDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120)
-                while (selectedConsentRequest == null) {
-                    active()
-                    if (System.nanoTime() >= consentDeadline)
-                        throw CarPlayConnectionFailure(CarPlayFailureKind.WIRELESS_REQUEST_TIMEOUT, false)
-                    val frame = bootstrap.recv(1000) ?: continue
-                    if (frame.messageId == 0x4e0e) selectedTransportNotification = frame
-                    if (consent.observe(frame)) selectedConsentRequest = frame
-                }
+        // Every explicitly selected bootstrap can authorize a bounded enrollment window,
+        // including another phone when this receiver already remembers controllers.
+        // Existing trust is not consent: MFi above and the setup choice below remain required.
+        // The explicit OAL CarPlay enable/selection supplies accessory-side consent.
+        // Automatic setup also waits for the phone's wireless service request. The user's
+        // explicit joined-AP/numeric-peer fallback supplies the alternative setup choice.
+        // Neither path proactively discloses credentials or treats a generic bond as consent.
+        if (network.manualPeer == null) {
+            status("carplay-enrollment stage=awaiting-selected-bootstrap-request")
+            val consent = WirelessEnrollmentConsentGate()
+            val consentDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120)
+            while (selectedConsentRequest == null) {
+                active()
+                if (System.nanoTime() >= consentDeadline)
+                    throw CarPlayConnectionFailure(CarPlayFailureKind.WIRELESS_REQUEST_TIMEOUT, false)
+                val frame = bootstrap.recv(1000) ?: continue
+                if (frame.messageId == 0x4e0e) selectedTransportNotification = frame
+                if (consent.observe(frame)) selectedConsentRequest = frame
             }
-            active()
-            projection.authorizeFirstEnrollment(120_000)
-            status(if (network.manualPeer == null)
-                "carplay-enrollment stage=authorized windowMs=120000 boundary=selected-bootstrap-request; first-client race remains possible"
-                else "carplay-enrollment stage=authorized windowMs=120000 boundary=explicit-manual-peer; first-client race remains possible")
         }
+        active()
+        projection.authorizeControllerEnrollment(120_000)
+        status(if (network.manualPeer == null)
+            "carplay-enrollment stage=authorized windowMs=120000 boundary=selected-bootstrap-request; first-client race remains possible"
+            else "carplay-enrollment stage=authorized windowMs=120000 boundary=explicit-manual-peer; first-client race remains possible")
         connectionStage("listener")
         // Shared IPv4 retains wildcard/auxiliary transport, with exact bounded control admission.
         try {

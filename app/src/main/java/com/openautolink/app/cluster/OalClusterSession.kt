@@ -2,8 +2,6 @@ package com.openautolink.app.cluster
 
 import android.os.SystemClock
 import android.content.Intent
-import android.graphics.BitmapFactory
-import android.util.Base64
 import android.util.Log
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
@@ -40,7 +38,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import java.time.Duration
 import java.time.ZonedDateTime
 
 /**
@@ -57,15 +54,30 @@ class OalClusterSession : Session() {
 
     companion object {
         private const val TAG = "OalClusterSession"
+        private var currentSession: OalClusterSession? = null
     }
 
     private var screen: OalClusterScreen? = null
     private var navigationManager: NavigationManager? = null
     private var scope: CoroutineScope? = null
     private var isNavigating = false
-    private var hasSeenActiveNav = false
+    private var rejectedManeuver: ManeuverState? = null
+    private var observedRoute: Long? = null
+    private var retired = false
+    private var sessionIdentity = Any()
 
-    override fun onCreateScreen(intent: Intent): Screen {
+    private fun isCurrentSession(): Boolean = !retired &&
+        (currentSession == null || currentSession === this)
+
+    override fun onCreateScreen(intent: Intent): Screen = synchronized(ClusterBindingLifecycle.lock) {
+        currentSession?.retire()
+        currentSession = this
+        retired = false
+        sessionIdentity = Any()
+        createScreen(intent)
+    }
+
+    private fun createScreen(intent: Intent): Screen {
         val clusterScreen = OalClusterScreen(carContext)
         screen = clusterScreen
 
@@ -76,14 +88,15 @@ class OalClusterSession : Session() {
         }
 
         navigationManager?.setNavigationManagerCallback(object : NavigationManagerCallback {
-            override fun onStopNavigation() {
+            override fun onStopNavigation(): Unit = synchronized(ClusterBindingLifecycle.lock) {
+                if (!isCurrentSession() || observedRoute == null ||
+                    observedRoute != ClusterNavigationState.recoveryDemand.value
+                ) return@synchronized
                 Log.i(TAG, "onStopNavigation callback from Templates Host")
-                try {
-                    navigationManager?.navigationStarted()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to re-assert navigationStarted(): ${e.message}")
-                    isNavigating = false
-                }
+                // Preserve source demand, but never let an old callback suppress a new route.
+                isNavigating = false
+                ClusterNavigationState.suppressCurrentRoute()
+                screen?.updateState(null)
             }
             override fun onAutoDriveEnabled() {}
         })
@@ -93,74 +106,135 @@ class OalClusterSession : Session() {
         sessionScope.launch { collectNavigationState() }
 
         lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onDestroy(owner: LifecycleOwner) {
-                if (isNavigating) {
-                    try { navigationManager?.navigationEnded() } catch (_: Exception) {}
-                    isNavigating = false
-                }
-                scope?.cancel()
-                scope = null
-                screen = null
-                navigationManager = null
+            override fun onDestroy(owner: LifecycleOwner): Unit = synchronized(ClusterBindingLifecycle.lock) {
+                retire()
             }
         })
 
         return clusterScreen
     }
 
+    private fun retire() {
+        val manager = navigationManager
+        val endNavigation = isNavigating
+        retired = true
+        sessionIdentity = Any()
+        isNavigating = false
+        if (currentSession === this) currentSession = null
+        scope?.cancel()
+        scope = null
+        screen?.updateState(null)
+        screen = null
+        navigationManager = null
+        if (endNavigation) try { manager?.navigationEnded() } catch (_: Exception) {}
+    }
+
+    private data class StateUpdate(
+        val maneuver: ManeuverState?, val route: Long?, val active: Boolean,
+        val terminalValidity: Long, val session: Any,
+    )
+
+    private fun snapshot(maneuver: ManeuverState? = ClusterNavigationState.state.value) = StateUpdate(
+        maneuver, ClusterNavigationState.recoveryDemand.value, ClusterNavigationState.isActive,
+        ClusterNavigationState.terminalValidity.value, sessionIdentity,
+    )
+
     private suspend fun collectNavigationState() {
         var debounceJob: Job? = null
         combine(
             ClusterNavigationState.state,
             ClusterNavigationState.vehicleEnergyForecast,
-        ) { maneuver, _ -> maneuver }.collectLatest { maneuver ->
+            ClusterNavigationState.routeActive,
+            ClusterNavigationState.recoveryDemand,
+            ClusterNavigationState.terminalValidity,
+        ) { _, _, _, _, _ ->
+            synchronized(ClusterBindingLifecycle.lock) { snapshot() }
+        }.collectLatest { update ->
             debounceJob?.cancel()
             debounceJob = scope?.launch {
                 delay(200)
-                processStateUpdate(maneuver)
+                processStateUpdate(update)
             }
         }
     }
 
-    private fun processStateUpdate(maneuver: ManeuverState?) {
-        val navManager = navigationManager ?: return
-
-        if (maneuver != null) {
-            hasSeenActiveNav = true
-            if (!isNavigating) {
-                try {
-                    navManager.navigationStarted()
-                    isNavigating = true
-                } catch (e: Exception) {
-                    Log.e(TAG, "navigationStarted() failed: ${e.message}")
-                    return
-                }
+    private fun withdrawGuidance(navManager: NavigationManager) {
+        val endNavigation = isNavigating
+        isNavigating = false
+        screen?.updateState(null)
+        if (endNavigation) {
+            try { navManager.navigationEnded() } catch (e: Exception) {
+                Log.w(TAG, "navigationEnded() failed: ${e.message}")
             }
+        }
+    }
 
+    // Preserve the direct integration-test entry point, capturing the same guarded snapshot.
+    private fun processStateUpdate(maneuver: ManeuverState?) = synchronized(ClusterBindingLifecycle.lock) {
+        processStateUpdate(snapshot(maneuver))
+    }
+
+    private fun processStateUpdate(update: StateUpdate): Unit = synchronized(ClusterBindingLifecycle.lock) {
+        val (maneuver, route, active, terminalValidity, session) = update
+        fun isSnapshotCurrent(): Boolean = isCurrentSession() && session === sessionIdentity &&
+            route == ClusterNavigationState.recoveryDemand.value && active == ClusterNavigationState.isActive &&
+            terminalValidity == ClusterNavigationState.terminalValidity.value &&
+            maneuver === ClusterNavigationState.state.value
+        if (!isSnapshotCurrent()) return@synchronized
+        val navManager = navigationManager ?: return@synchronized
+        if (observedRoute != route) {
+            rejectedManeuver = null
+            withdrawGuidance(navManager)
+            if (!isSnapshotCurrent()) return@synchronized
+            observedRoute = route
+        }
+        if (!active || maneuver == null || ClusterNavigationState.isRouteSuppressed) {
+            rejectedManeuver = null
+            withdrawGuidance(navManager)
+            return@synchronized
+        }
+        if (maneuver == rejectedManeuver) return@synchronized
+        val trip = try {
+            buildTrip(maneuver)
+        } catch (e: Exception) {
+            if (!isSnapshotCurrent()) return@synchronized
+            rejectedManeuver = maneuver
+            Log.e(TAG, "buildTrip() failed: ${e.message}")
+            withdrawGuidance(navManager)
+            return@synchronized
+        }
+        if (!isSnapshotCurrent()) return@synchronized
+        if (!isNavigating) {
             try {
-                val trip = buildTrip(maneuver)
-                navManager.updateTrip(trip)
+                // Reentrant stop must be able to revoke ownership during the call.
+                isNavigating = true
+                navManager.navigationStarted()
+                if (!isSnapshotCurrent()) return@synchronized
             } catch (e: Exception) {
-                Log.e(TAG, "updateTrip() failed: ${e.message}")
+                if (!isSnapshotCurrent()) return@synchronized
+                isNavigating = false
+                Log.e(TAG, "navigationStarted() failed: ${e.message}")
+                screen?.updateState(null)
+                return@synchronized
             }
-
+        }
+        try {
+            if (!isSnapshotCurrent()) return@synchronized
+            navManager.updateTrip(trip)
+            if (!isSnapshotCurrent()) return@synchronized
+            rejectedManeuver = null
             screen?.updateState(maneuver)
-        } else if (isNavigating && hasSeenActiveNav) {
-            try {
-                navManager.navigationEnded()
-            } catch (e: Exception) {
-                Log.e(TAG, "navigationEnded() failed: ${e.message}")
-            }
-            isNavigating = false
-            screen?.updateState(null)
+        } catch (e: Exception) {
+            if (!isSnapshotCurrent()) return@synchronized
+            rejectedManeuver = maneuver
+            Log.e(TAG, "updateTrip() failed: ${e.message}")
+            withdrawGuidance(navManager)
         }
     }
 
     private fun buildTrip(maneuver: ManeuverState): Trip {
         val tripBuilder = Trip.Builder()
-        val eta = ZonedDateTime.now().plus(
-            Duration.ofSeconds((maneuver.etaSeconds ?: 0).toLong())
-        )
+        val now = ZonedDateTime.now()
 
         val maneuverObj = buildManeuver(maneuver, carContext)
         val stepBuilder = Step.Builder()
@@ -179,13 +253,13 @@ class OalClusterSession : Session() {
             }
         }
 
-        val distance = toDistance(
-            maneuver.distanceMeters ?: 0,
+        val distance = maneuver.distanceMeters?.let { meters -> toDistance(
+            meters,
             ClusterNavigationState.distanceUnits,
             maneuver.displayDistance,
             maneuver.displayDistanceUnit
-        )
-        val stepEstimate = TravelEstimate.Builder(distance, eta).build()
+        ) }
+        val stepEstimate = ClusterTravelEstimate.buildDistance(distance, maneuver.etaSeconds?.toLong(), now)
         tripBuilder.addStep(stepBuilder.build(), stepEstimate)
 
         // Add destination info when available (address + arrival ETA + remaining distance)
@@ -194,26 +268,24 @@ class OalClusterSession : Session() {
             destBuilder.setName(destAddress)
             destBuilder.setAddress(destAddress)
 
-            val destDistance = toDistance(
-                maneuver.destDistanceMeters ?: maneuver.distanceMeters ?: 0,
+            val destDistance = maneuver.destDistanceMeters?.let { meters -> toDistance(
+                meters,
                 ClusterNavigationState.distanceUnits,
                 maneuver.destDistanceDisplay,
                 maneuver.destDistanceUnit
-            )
-            val destEta = if (maneuver.timeToArrivalSeconds != null && maneuver.timeToArrivalSeconds > 0) {
-                ZonedDateTime.now().plus(Duration.ofSeconds(maneuver.timeToArrivalSeconds))
-            } else {
-                eta
-            }
-            val destEstimateBuilder = TravelEstimate.Builder(destDistance, destEta)
+            ) }
+            val destEta = maneuver.timeToArrivalSeconds?.takeIf { it >= 0 }?.let { now.plusSeconds(it) }
+            val destEstimateBuilder = if (destDistance != null && destEta != null)
+                TravelEstimate.Builder(destDistance, destEta) else null
             val forecast = ClusterNavigationState.vehicleEnergyForecast.value
             if (VehicleEnergyForecastPolicy.isFresh(forecast, SystemClock.elapsedRealtime())) {
                 VehicleEnergyForecastPolicy.tripText(
                     forecast,
                     ClusterNavigationState.batteryCapacityWh,
-                )?.let { destEstimateBuilder.setTripText(CarText.create(it)) }
+                )?.let { destEstimateBuilder?.setTripText(CarText.create(it)) }
             }
-            val destEstimate = destEstimateBuilder.build()
+            val destEstimate = destEstimateBuilder?.build() ?: ClusterTravelEstimate.buildDistance(
+                destDistance, maneuver.timeToArrivalSeconds, now)
             tripBuilder.addDestination(destBuilder.build(), destEstimate)
         }
 
@@ -240,7 +312,9 @@ class OalClusterScreen(carContext: CarContext) : Screen(carContext) {
     }
 
     override fun onGetTemplate(): Template {
-        val maneuver = currentManeuver ?: return NavigationTemplate.Builder()
+        // RoutingInfo requires a real distance. Trip still carries the retained step/cue
+        // when an estimate expires; no model-supported unknown distance exists here.
+        val maneuver = currentManeuver?.takeIf { it.distanceMeters != null } ?: return NavigationTemplate.Builder()
             .setActionStrip(actionStrip)
             .build()
 
@@ -252,17 +326,12 @@ class OalClusterScreen(carContext: CarContext) : Screen(carContext) {
             cueText?.let { stepBuilder.setCue(it) }
             maneuver.roadName?.let { stepBuilder.setRoad(it) }
 
-            // Add lane guidance from modern NavigationState
-            maneuver.lanes?.let { laneInfoList ->
-                if (laneInfoList.isNotEmpty()) {
-                    for (lane in buildLanes(laneInfoList)) {
-                        stepBuilder.addLane(lane)
-                    }
-                }
-            }
-
+            // RoutingInfo requires a lanes image whenever lane primitives are
+            // supplied. Our transport carries no lanes image; do not let optional
+            // lanes blank otherwise usable maneuver/road/distance guidance here.
+            // Trips retain the primitives for hosts that can consume them.
             val distance = toDistance(
-                maneuver.distanceMeters ?: 0,
+                requireNotNull(maneuver.distanceMeters),
                 ClusterNavigationState.distanceUnits,
                 maneuver.displayDistance,
                 maneuver.displayDistanceUnit
@@ -287,49 +356,60 @@ class OalClusterScreen(carContext: CarContext) : Screen(carContext) {
 // ── Shared helpers for cluster sessions ──
 
 internal fun buildManeuver(maneuver: ManeuverState, carContext: CarContext): Maneuver {
-    // Path 1: AA bitmap icon from bridge (pre-rendered by Google Maps)
-    val imageBase64 = maneuver.navImageBase64
-    if (imageBase64 != null) {
-        try {
-            val bytes = Base64.decode(imageBase64, Base64.DEFAULT)
-            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            if (bitmap != null) {
-                val builder = Maneuver.Builder(Maneuver.TYPE_UNKNOWN)
-                builder.setIcon(CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build())
-                return builder.build()
-            }
-        } catch (_: Exception) {}
+    var type = mapManeuverTypeToCarApp(maneuver.type)
+    // Named semantics remain authoritative when AndroidX can represent them.
+    // A bitmap never waives the required positive ordinal on combined types.
+    if (isRoundaboutManeuverType(type) && (maneuver.roundaboutExitNumber ?: 0) <= 0) {
+        type = Maneuver.TYPE_UNKNOWN
     }
-
-    // Path 2: VectorDrawable fallback
-    val type = mapManeuverTypeToCarApp(maneuver.type)
     val builder = Maneuver.Builder(type)
-    // Roundabout maneuver types REQUIRE an exit number — androidx
-    // Maneuver.Builder.build() throws IllegalArgumentException
-    // ("Maneuver missing roundaboutExitNumber") for any TYPE_ROUNDABOUT_*
-    // without one, which dropped the whole cluster Trip on every roundabout
-    // and stopped nav guidance updating (issue #42). The exit number is
-    // already carried on ManeuverState; default to 1 if the phone didn't
-    // supply it (better a slightly-wrong exit count than a dropped Trip).
     if (isRoundaboutManeuverType(type)) {
-        builder.setRoundaboutExitNumber(
-            (maneuver.roundaboutExitNumber ?: 1).coerceAtLeast(1)
-        )
+        builder.setRoundaboutExitNumber(requireNotNull(maneuver.roundaboutExitNumber))
     }
-    val resId = ManeuverIconRenderer.drawableForManeuver(maneuver.type)
-    builder.setIcon(CarIcon.Builder(IconCompat.createWithResource(carContext, resId)).build())
+    // NavigationDisplayImpl scopes artwork to the current instruction: explicit
+    // turns clear absent artwork; distance-only deltas retain the association.
+    val bitmap = decodeCurrentManeuverArtwork(maneuver.navImageBase64)
+    if (bitmap != null) {
+        builder.setIcon(CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build())
+    } else if (maneuver.type != ManeuverType.UNKNOWN) {
+        // Generic roundabouts have known identity, but no sourced circulation.
+        // Missing required geometry also uses neutral, never a fictional exit.
+        val resId = if (type == Maneuver.TYPE_UNKNOWN) {
+            com.openautolink.app.R.drawable.nav_roundabout_neutral
+        } else ManeuverIconRenderer.drawableForManeuver(maneuver.type)
+        builder.setIcon(CarIcon.Builder(IconCompat.createWithResource(carContext, resId)).build())
+    }
     return builder.build()
 }
 
-/** True for the androidx Maneuver.TYPE_ROUNDABOUT_* constants that mandate an
- *  exit number on build(). Kept in sync with the roundabout cases in
- *  [mapManeuverTypeToCarApp]. */
-internal fun isRoundaboutManeuverType(type: Int): Boolean = type == Maneuver.TYPE_ROUNDABOUT_ENTER_CCW ||
-    type == Maneuver.TYPE_ROUNDABOUT_EXIT_CCW ||
+/** Bound encoded bytes, decoded bytes, dimensions and pixels before allocation. */
+private fun decodeCurrentManeuverArtwork(encoded: String?): android.graphics.Bitmap? {
+    if (encoded == null || encoded.length > 1_398_104) return null // 1 MiB base64 ceiling
+    return try {
+        val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
+        if (bytes.isEmpty() || bytes.size > 1_048_576) return null
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth !in 1..1024 || bounds.outHeight !in 1..1024 ||
+            bounds.outWidth.toLong() * bounds.outHeight > 1_048_576L) return null
+        val options = android.graphics.BitmapFactory.Options().apply {
+            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+            inScaled = false
+        }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.takeIf {
+            it.width == bounds.outWidth && it.height == bounds.outHeight
+        }
+    } catch (_: IllegalArgumentException) {
+        null
+    } catch (_: java.lang.RuntimeException) {
+        null
+    }
+}
+
+/** The ordinal-only combined types require a positive, sourced exit number. */
+internal fun isRoundaboutManeuverType(type: Int): Boolean =
     type == Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CW ||
-    type == Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CCW ||
-    type == Maneuver.TYPE_ROUNDABOUT_ENTER_CW ||
-    type == Maneuver.TYPE_ROUNDABOUT_EXIT_CW
+    type == Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CCW
 
 internal fun mapManeuverTypeToCarApp(type: ManeuverType): Int = when (type) {
     ManeuverType.DEPART -> Maneuver.TYPE_DEPART
@@ -346,7 +426,7 @@ internal fun mapManeuverTypeToCarApp(type: ManeuverType): Int = when (type) {
     ManeuverType.KEEP_RIGHT -> Maneuver.TYPE_KEEP_RIGHT
     ManeuverType.MERGE_LEFT -> Maneuver.TYPE_MERGE_LEFT
     ManeuverType.MERGE_RIGHT -> Maneuver.TYPE_MERGE_RIGHT
-    ManeuverType.MERGE_UNSPECIFIED -> Maneuver.TYPE_MERGE_LEFT
+    ManeuverType.MERGE_UNSPECIFIED -> Maneuver.TYPE_MERGE_SIDE_UNSPECIFIED
     ManeuverType.FORK_LEFT -> Maneuver.TYPE_FORK_LEFT
     ManeuverType.FORK_RIGHT -> Maneuver.TYPE_FORK_RIGHT
     ManeuverType.ON_RAMP_LEFT -> Maneuver.TYPE_ON_RAMP_NORMAL_LEFT
@@ -361,8 +441,12 @@ internal fun mapManeuverTypeToCarApp(type: ManeuverType): Int = when (type) {
     ManeuverType.OFF_RAMP_RIGHT -> Maneuver.TYPE_OFF_RAMP_NORMAL_RIGHT
     ManeuverType.OFF_RAMP_SLIGHT_LEFT -> Maneuver.TYPE_OFF_RAMP_SLIGHT_LEFT
     ManeuverType.OFF_RAMP_SLIGHT_RIGHT -> Maneuver.TYPE_OFF_RAMP_SLIGHT_RIGHT
-    ManeuverType.ROUNDABOUT_ENTER -> Maneuver.TYPE_ROUNDABOUT_ENTER_CCW
-    ManeuverType.ROUNDABOUT_EXIT -> Maneuver.TYPE_ROUNDABOUT_EXIT_CCW
+    ManeuverType.ROUNDABOUT_ENTER, ManeuverType.ROUNDABOUT_EXIT,
+    ManeuverType.ROUNDABOUT_ENTER_AND_EXIT -> Maneuver.TYPE_UNKNOWN
+    ManeuverType.ROUNDABOUT_ENTER_CW -> Maneuver.TYPE_ROUNDABOUT_ENTER_CW
+    ManeuverType.ROUNDABOUT_ENTER_CCW -> Maneuver.TYPE_ROUNDABOUT_ENTER_CCW
+    ManeuverType.ROUNDABOUT_EXIT_CW -> Maneuver.TYPE_ROUNDABOUT_EXIT_CW
+    ManeuverType.ROUNDABOUT_EXIT_CCW -> Maneuver.TYPE_ROUNDABOUT_EXIT_CCW
     ManeuverType.ROUNDABOUT_ENTER_AND_EXIT_CW -> Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CW
     ManeuverType.ROUNDABOUT_ENTER_AND_EXIT_CCW -> Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CCW
     ManeuverType.DESTINATION -> Maneuver.TYPE_DESTINATION
@@ -372,7 +456,7 @@ internal fun mapManeuverTypeToCarApp(type: ManeuverType): Int = when (type) {
     ManeuverType.FERRY -> Maneuver.TYPE_FERRY_BOAT
     ManeuverType.FERRY_TRAIN -> Maneuver.TYPE_FERRY_TRAIN
     ManeuverType.NAME_CHANGE -> Maneuver.TYPE_NAME_CHANGE
-    ManeuverType.UNKNOWN -> Maneuver.TYPE_STRAIGHT
+    ManeuverType.UNKNOWN -> Maneuver.TYPE_UNKNOWN
 }
 
 /**

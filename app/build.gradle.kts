@@ -41,10 +41,13 @@ android {
         applicationId = findProperty("appId") as? String ?: "com.fdmwqz9kpmhash.carlink"
         minSdk = 32
         targetSdk = 36
-        versionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 64
-        versionName = (findProperty("oalVersionName") as? String) ?: "0.1.64"
+        versionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 65
+        versionName = (findProperty("oalVersionName") as? String) ?: "0.1.65"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Explicit lab opt-in; never infer a safety feature from a tablet/AA override.
+        buildConfigField("boolean", "CARPLAY_DRIVING_RESTRICTIONS",
+            (providers.gradleProperty("oalCarPlayDrivingRestrictions").orNull == "true").toString())
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

@@ -25,6 +25,16 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
+/** Transport permission is never an Android output grant. */
+enum class CarPlayPlayDisposition(val token: String, val transportPermitted: Boolean, val outputPermitted: Boolean) {
+    GRANTED("granted", true, true),
+    RETAINED("retained", true, true),
+    DEFERRED("deferred", true, false),
+    INTERRUPTED("interrupted", true, false),
+    DENIED("denied", false, false),
+    CLOSED("closed", false, false),
+}
+
 /** H264/platform-decoded output and optional platform-encoded, permission-gated microphone. */
 class AndroidMediaSink(
     context: Context,
@@ -46,40 +56,148 @@ class AndroidMediaSink(
     private val microphoneOwners = ConcurrentHashMap.newKeySet<MicrophoneUplink>()
     private val manager = context.applicationContext.getSystemService(AudioManager::class.java)
     private var focusRevision = 0L
-    private var focus = newFocusRequest()
-    private fun newFocusRequest(): AudioFocusRequest {
-        val revision = ++focusRevision
-        return AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-        .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-        .setOnAudioFocusChangeListener({ change ->
-            synchronized(this) {
-                if (!closed.get() && revision == focusRevision && focusHeld && !permanentlyLost) {
-                    // Delivered CAN_DUCK is permission to attenuate, not a full loss.
-                    // Automatic AAOS/HAL ducking can occur without this callback.
-                    when (change) {
-                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> { focusVolume = 0.2f; muteReason = "duck" }
-                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> { focusVolume = 0f; muteReason = "transient" }
-                        AudioManager.AUDIOFOCUS_LOSS -> { focusVolume = 0f; permanentlyLost = true; muteReason = "permanent-loss" }
-                        AudioManager.AUDIOFOCUS_GAIN -> { focusVolume = 1f; muteReason = "unmuted" }
-                    }
-                    tracks.values.forEach { it.volume(focusVolume, muteReason, focusRevision) }
-                    report("media stage=audio-focus-change change=$change volumePercent=${(focusVolume * 100).toInt()}")
-                    reportMute("focus-change")
-                }
-            }
-        }, Handler(Looper.getMainLooper())).build()
+    // Last platform request retained for existing diagnostic/test readers, never used for ownership.
+    private var focus: AudioFocusRequest? = null
+    private class FocusOwner(val purpose: CarPlayFocusPurpose) {
+        var request: AudioFocusRequest? = null
+        var retiring: AudioFocusRequest? = null
+        var retirementRequired = false
+        var revision = 0L
+        var granted = false
+        var blocked = false // Only this purpose's real grant can clear denial/permanent loss.
+        // Explicit PLAY authorizes one later attempt if this blocked purpose is inactive.
+        // It is not a grant or a call-interaction identity; SETUP/packets never replenish it.
+        var recoveryAuthorized = false
+        var volume = 1f
+        var mute = "unmuted"
+    }
+    private val focusOwners = CarPlayFocusPurpose.entries.associateWith { FocusOwner(it) }
+    private class MediaPlayAuthorization(val generation: Long, val current: () -> Boolean)
+    private val mediaPlayGeneration = AtomicLong()
+    private var deferredMediaStartGeneration: Long? = null
+    private val pendingMediaPlay = java.util.concurrent.atomic.AtomicReference<MediaPlayAuthorization?>()
+    private fun authorized(play: MediaPlayAuthorization) = !closed.get() &&
+        mediaPlayGeneration.get() == play.generation && play.current()
+
+    /** PAUSE/STOP and owner retirement cancel intent without waiting for a platform call. */
+    fun cancelPendingMediaPlay() {
+        mediaPlayGeneration.incrementAndGet()
+        pendingMediaPlay.set(null)
+    }
+    // Test boundary after a caller selects pending PLAY, before its atomic consumption.
+    @Volatile internal var beforeMediaPlayConsumption: (() -> Unit)? = null
+    private fun requestAuthorizedMedia(media: FocusOwner): Boolean {
+        beforeMediaPlayConsumption?.invoke()
+        // Selecting deferred PLAY is not a grant, even if STOP clears it before consumption.
+        // Latch output closed before nullable consumption, predicate evaluation or Binder.
+        media.blocked = true
+        media.volume = 0f
+        media.mute = "denied"
+        applyFocus(media)
+        val play = pendingMediaPlay.getAndSet(null) ?: return false
+        if (!authorized(play)) return false
+        abandonFocus(media)
+        return requestFocus(media,"user-play") { authorized(play) }
     }
     private val tracks = ConcurrentHashMap<AudioStreamId, AudioOutputTrack>()
-    private var focusHeld = false // Request lifetime; transient loss retains this request.
-    private var focusVolume = 1f
-    private var permanentlyLost = false
-    private var muteReason = "unmuted"
-    private fun reportMute(reason: String) {
-        report("media stage=audio-mute reason=$reason revision=$focusRevision volumePercent=${(focusVolume * 100).toInt()} mute=$muteReason")
+    private val trackPurposes = mutableMapOf<AudioStreamId, CarPlayFocusPurpose?>()
+    private fun focusAttenuation(owner: FocusOwner, alternate: Boolean): Pair<Float, String> {
+        // Alternate has no primary request. Once MEDIA's listener is actually retired,
+        // its temporary interruption has no recovery callback and must not strand guidance.
+        // Real denial/permanent loss and unresolved retirement remain restrictive.
+        val retiredInterruption = alternate && owner.request == null && owner.retiring == null &&
+            !owner.blocked && (owner.mute == "transient" || owner.mute == "duck" || owner.mute == "deferred")
+        return if (retiredInterruption) 1f to "unmuted" else owner.volume to owner.mute
     }
-    private fun reportFocus(reason: String, result: String) {
-        report("media stage=audio-focus-request reason=$reason result=$result revision=$focusRevision volumePercent=${(focusVolume * 100).toInt()} mute=$muteReason")
+    private fun applyFocus(owner: FocusOwner) {
+        tracks.forEach { (id, track) ->
+            val purpose = trackPurposes[id]
+            if ((purpose ?: CarPlayFocusPurpose.MEDIA) == owner.purpose) {
+                val (volume, mute) = focusAttenuation(owner,alternate = purpose == null)
+                track.volume(volume, mute, owner.revision)
+            }
+        }
+    }
+    private fun abandonFocus(owner: FocusOwner) {
+        val old = owner.request ?: owner.retiring ?: return
+        // Fence before Binder, but keep failed retirement as exact bounded debt.
+        owner.request = null
+        owner.retiring = old
+        owner.granted = false
+        val result = runCatching { manager?.abandonAudioFocusRequest(old)
+            ?: AudioManager.AUDIOFOCUS_REQUEST_GRANTED }.getOrNull()
+        // An explicitly rejected request never owned focus. Still unregister its listener,
+        // but a failed cleanup cannot create focus debt that the OS said it never granted.
+        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED || !owner.retirementRequired) {
+            owner.retiring = null
+            owner.retirementRequired = false
+            applyFocus(owner)
+        }
+        else {
+            owner.volume = 0f
+            owner.mute = "denied"
+            applyFocus(owner)
+        }
+        reportFocusOwner(owner,if (owner.retiring == null) "abandon" else "pending")
+    }
+    private fun reportFocusOwner(owner: FocusOwner, action: String) {
+        val purpose = owner.purpose
+        report("media stage=audio-focus-owner purpose=${purpose.name.lowercase(java.util.Locale.ROOT)} action=$action " +
+            "usage=${purpose.usage} content=${purpose.content} gain=${purpose.gain} revision=${owner.revision}")
+    }
+    private fun requestFocus(owner: FocusOwner, reason: String, current: () -> Boolean = { true }): Boolean {
+        if (!current()) return false
+        if (owner.retiring != null) return false // Never overlap an unacknowledged predecessor.
+        val revision = ++focusRevision
+        owner.revision = revision
+        val request = AudioFocusRequest.Builder(owner.purpose.gain)
+            .setAudioAttributes(owner.purpose.attributes())
+            .setOnAudioFocusChangeListener({ change ->
+                synchronized(this) {
+                    if (!closed.get() && owner.request != null && owner.revision == revision &&
+                        owner.granted && !owner.blocked) {
+                        when (change) {
+                            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> { owner.volume = 0.2f; owner.mute = "duck" }
+                            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> { owner.volume = 0f; owner.mute = "transient" }
+                            AudioManager.AUDIOFOCUS_LOSS -> { owner.volume = 0f; owner.blocked = true; owner.mute = "permanent-loss" }
+                            AudioManager.AUDIOFOCUS_GAIN -> { owner.volume = 1f; owner.mute = "unmuted" }
+                        }
+                        applyFocus(owner)
+                        report("media stage=audio-focus-change change=$change volumePercent=${(owner.volume * 100).toInt()}")
+                        reportMute(owner,"focus-change")
+                    }
+                }
+            }, Handler(Looper.getMainLooper())).build()
+        owner.request = request
+        focus = request
+        reportFocusOwner(owner,"request")
+        val response = runCatching { manager?.requestAudioFocus(request) }
+        val granted = response.getOrNull() == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        owner.retirementRequired = granted || response.isFailure ||
+            response.getOrNull() == AudioManager.AUDIOFOCUS_REQUEST_DELAYED
+        if (closed.get() || !current()) {
+            owner.blocked = true // cancelled late grants cannot become implicit permission on SETUP
+            owner.volume = 0f
+            owner.mute = "denied"
+            abandonFocus(owner)
+            applyFocus(owner)
+            reportFocus(owner,reason,"closed")
+            return false
+        }
+        owner.granted = granted
+        owner.blocked = !granted
+        owner.volume = if (granted) 1f else 0f
+        owner.mute = if (granted) "unmuted" else "denied"
+        applyFocus(owner)
+        report(if (granted) "media stage=audio-focus-granted" else "media stage=audio-focus-denied")
+        reportFocus(owner,reason,if (granted) "granted" else "denied")
+        return granted
+    }
+    private fun reportMute(owner: FocusOwner, reason: String) {
+        report("media stage=audio-mute reason=$reason revision=${owner.revision} volumePercent=${(owner.volume * 100).toInt()} mute=${owner.mute}")
+    }
+    private fun reportFocus(owner: FocusOwner, reason: String, result: String) {
+        report("media stage=audio-focus-request reason=$reason result=$result revision=${owner.revision} volumePercent=${(owner.volume * 100).toInt()} mute=${owner.mute}")
     }
     @Volatile private var recovery: (() -> Unit)? = null
     @Volatile private var diagnostic: ((String) -> Unit)? = null
@@ -180,53 +298,139 @@ class AndroidMediaSink(
     @Synchronized override fun onAudioStarted(id: AudioStreamId, format: AudioFormat, firstSample: Int) {
         if (closed.get() || !supportsAudio(format)) return
         require(format.channels in 1..2)
-        tracks.entries.removeIf { it.value.isRetired }
+        val retiredPurposes = mutableSetOf<CarPlayFocusPurpose>()
+        tracks.entries.removeIf {
+            if (!it.value.isRetired) false else {
+                trackPurposes.remove(it.key)?.let(retiredPurposes::add)
+                true
+            }
+        }
+        retiredPurposes.filter { purpose -> trackPurposes.values.none { it == purpose } }
+            .forEach { retireFocusMembership(focusOwners.getValue(it)) }
         tracks[id]?.let { old ->
             old.close()
             if (!old.isRetired) { report("media stage=audio-retirement-pending"); return }
             tracks.remove(id, old)
         }
         if (tracks.size >= 8) { report("media stage=audio-owner-limit"); return }
-        if (!focusHeld && !permanentlyLost) {
-            focus = newFocusRequest()
-            val granted = manager?.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-            focusHeld = true // A live request, not permission to undo a transient/permanent loss.
-            focusVolume = if (granted) 1f else 0f
-            permanentlyLost = !granted
-            muteReason = if (granted) "unmuted" else "denied"
-            report(if (granted) "media stage=audio-focus-granted" else "media stage=audio-focus-denied")
-            reportFocus("stream-start", if (granted) "granted" else "denied")
+        val purpose = CarPlayFocusPurpose.of(format)
+        if (purpose == CarPlayFocusPurpose.MEDIA && trackPurposes.values.none { it == purpose })
+            deferredMediaStartGeneration = null
+        val owner = focusOwners.getValue(purpose ?: CarPlayFocusPurpose.MEDIA)
+        if (purpose != null) {
+            if (purpose == CarPlayFocusPurpose.MEDIA && hasLiveInteraction()) {
+                // A deferred PLAY never permits SETUP to request competing MEDIA focus.
+                if (owner.request == null && !owner.blocked && owner.retiring == null) {
+                    if (deferredMediaStartGeneration == null) deferredMediaStartGeneration = mediaPlayGeneration.get()
+                    owner.volume = 0f
+                    owner.mute = "deferred"
+                }
+            } else if (purpose == CarPlayFocusPurpose.MEDIA && pendingMediaPlay.get() != null) {
+                requestAuthorizedMedia(owner)
+            } else if (owner.recoveryAuthorized) {
+                // Consume before Binder, including denial or unresolved abandonment.
+                owner.recoveryAuthorized = false
+                abandonFocus(owner)
+                requestFocus(owner,"user-play")
+            } else if (owner.request == null && !owner.blocked &&
+                (purpose != CarPlayFocusPurpose.MEDIA || deferredMediaStartGeneration == null ||
+                    deferredMediaStartGeneration == mediaPlayGeneration.get())) requestFocus(owner,"stream-start")
         }
+        if (closed.get()) return
         telemetry.audioStreamStarted()
         val stream = audioOwners.incrementAndGet() // Local owner sequence, never a phone connection ID.
         val qualification = "stream=$stream type=${id.type} audioType=${format.audioType} codec=${format.codec}"
         report("media stage=audio-setup $qualification rate=${format.sampleRate} clock=${format.rtpClockRate} channels=${format.channels} spf=${format.samplesPerFrame}")
-        reportMute("stream-start")
-        tracks[id] = AudioOutputTrack(format, firstSample, writtenBytes, telemetry, ::report, qualification, focusVolume, muteReason, focusRevision)
+        reportMute(owner,"stream-start")
+        trackPurposes[id] = purpose
+        val (volume, mute) = focusAttenuation(owner,alternate = purpose == null)
+        tracks[id] = AudioOutputTrack(format, firstSample, writtenBytes, telemetry, ::report, qualification, volume, mute, owner.revision)
     }
     override fun onAudioRtp(id: AudioStreamId, format: AudioFormat, rtp: ByteArray, sample: Int) {
         tracks[id]?.submit(rtp, sample)
     }
-    /** No timer/packet/SETUP may reclaim permanent focus loss. Only explicit user PLAY calls here. */
-    @Synchronized fun requestFocusForUserPlay(): Boolean {
-        if (closed.get()) { reportFocus("user-play", "closed"); return false }
-        if (focusHeld && !permanentlyLost && focusVolume > 0f) { reportFocus("user-play", "retained"); return true }
-        manager?.abandonAudioFocusRequest(focus)
-        focus = newFocusRequest()
-        val granted = manager?.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        if (closed.get()) { reportFocus("user-play", "closed"); return false } // Late Binder cannot revive a revoked owner.
-        focusHeld = true
-        permanentlyLost = !granted
-        focusVolume = if (granted) 1f else 0f
-        muteReason = if (granted) "unmuted" else "denied"
-        tracks.values.forEach { it.volume(focusVolume, muteReason, focusRevision) }
-        report(if (granted) "media stage=audio-focus-granted" else "media stage=audio-focus-denied")
-        reportFocus("user-play", if (granted) "granted" else "denied")
-        return granted
+    /**
+     * Explicit source/MediaSession PLAY is a bounded recovery opportunity for each purpose,
+     * never a cross-purpose grant. Inactive blocked owners defer one attempt to their next
+     * admitted primary stream. Compatibility callers get only actual MEDIA output permission;
+     * the receiver uses prepareUserPlay to distinguish transport-only permission from a grant.
+     */
+    fun requestFocusForUserPlay(): Boolean = prepareUserPlay().outputPermitted
+
+    /** current must be a nonblocking exact-session/command fence; retained only for one pending PLAY. */
+    @Synchronized fun prepareUserPlay(current: () -> Boolean = { true }): CarPlayPlayDisposition {
+        val media = focusOwners.getValue(CarPlayFocusPurpose.MEDIA)
+        if (closed.get() || !current()) { reportFocus(media,"user-play", "closed"); return CarPlayPlayDisposition.CLOSED }
+        val disposition = if (media.request != null && !media.blocked &&
+            (media.volume > 0f || hasLiveInteraction())) {
+            reportFocus(media,"user-play", "retained")
+            if (media.volume > 0f) CarPlayPlayDisposition.RETAINED else CarPlayPlayDisposition.INTERRUPTED
+        } else if (hasLiveInteraction()) {
+            // Native GM sends the transport key independently of its audio-start focus boundary.
+            // Membership, not volume or a queued callback, determines a live interaction.
+            pendingMediaPlay.set(MediaPlayAuthorization(mediaPlayGeneration.get(),current))
+            CarPlayPlayDisposition.DEFERRED
+        } else {
+            pendingMediaPlay.set(null)
+            abandonFocus(media)
+            if (requestFocus(media,"user-play",current)) CarPlayPlayDisposition.GRANTED else CarPlayPlayDisposition.DENIED
+        }
+        for (owner in focusOwners.values) {
+            if (closed.get() || !current()) return CarPlayPlayDisposition.CLOSED
+            if (owner === media || (!owner.blocked && owner.retiring == null)) continue
+            if (trackPurposes.values.any { it == owner.purpose }) {
+                owner.recoveryAuthorized = false
+                abandonFocus(owner)
+                requestFocus(owner,"user-play",current)
+            } else {
+                owner.recoveryAuthorized = true // Coalesced, not an accumulating retry budget.
+            }
+        }
+        return if (closed.get() || !current()) CarPlayPlayDisposition.CLOSED else disposition
     }
+    private fun hasLiveInteraction() = trackPurposes.values.any { it != null && it != CarPlayFocusPurpose.MEDIA } ||
+        focusOwners.values.any { it.purpose != CarPlayFocusPurpose.MEDIA && it.retiring != null }
+
+    @Volatile internal var beforeInitialMediaResume: (() -> Unit)? = null
+    private fun resumeAuthorizedMedia() {
+        val media = focusOwners.getValue(CarPlayFocusPurpose.MEDIA)
+        if (closed.get() || hasLiveInteraction() ||
+            trackPurposes.values.none { it == CarPlayFocusPurpose.MEDIA }) return
+        if (pendingMediaPlay.get() != null) {
+            // Only explicit PLAY funds recovery of a blocked owner. Never a focus callback.
+            requestAuthorizedMedia(media)
+        } else if (media.request == null && !media.blocked && media.retiring == null &&
+            media.mute == "deferred" && deferredMediaStartGeneration == mediaPlayGeneration.get()) {
+            // First admission, not recovery: SETUP arrived during an interaction, without a request.
+            beforeInitialMediaResume?.invoke()
+            val generation = deferredMediaStartGeneration ?: return
+            requestFocus(media,"stream-start") { generation == mediaPlayGeneration.get() }
+        }
+    }
+
+    @Synchronized override fun onAudioReplacing(id: AudioStreamId) {
+        // Keep the existing MEDIA owner until onAudioStarted atomically retires/replaces
+        // its track. SETUP alone neither cancels PLAY nor mints a new initial admission.
+        // The old transport is closed; its output queue and membership remain bounded.
+        // Nonmedia keeps its existing stop/start policy; TEARDOWN always uses onAudioStopped.
+        if (trackPurposes[id] != CarPlayFocusPurpose.MEDIA) onAudioStopped(id)
+    }
+
     @Synchronized override fun onAudioStopped(id: AudioStreamId) {
         tracks[id]?.let { old -> old.close(); if (old.isRetired) tracks.remove(id, old) }
-        if (tracks.values.none { !it.isClosed }) { manager?.abandonAudioFocusRequest(focus); focusHeld = false; focusRevision++ }
+        val purpose = trackPurposes.remove(id) ?: return
+        if (trackPurposes.values.none { it == purpose }) {
+            retireFocusMembership(focusOwners.getValue(purpose))
+        }
+        if (purpose != CarPlayFocusPurpose.MEDIA) resumeAuthorizedMedia()
+    }
+    private fun retireFocusMembership(owner: FocusOwner) {
+        // Explicit stop and independently retired output pruning share the same contract.
+        if (owner.purpose == CarPlayFocusPurpose.MEDIA) {
+            cancelPendingMediaPlay()
+            deferredMediaStartGeneration = null
+        }
+        abandonFocus(owner)
     }
     private fun runVideo() {
         var codec: MediaCodec? = null
@@ -386,11 +590,13 @@ class AndroidMediaSink(
     }
     /** Nonblocking cancellation while user PLAY may be inside the platform focus call. */
     fun revokePendingWork() {
+        cancelPendingMediaPlay()
         presentation.close()
         if (closed.compareAndSet(false, true)) telemetry.retire()
         videoThread.interrupt()
     }
     override fun close() {
+        cancelPendingMediaPlay()
         routeDiagnostics.close()
         presentation.close()
         if (closed.compareAndSet(false, true)) telemetry.retire()
@@ -405,7 +611,8 @@ class AndroidMediaSink(
             tracks.entries.removeIf { it.value.isRetired }
             microphones.close()
             microphoneOwners.removeIf { it.isRetired }
-            manager?.abandonAudioFocusRequest(focus); focusHeld = false
+            trackPurposes.clear()
+            focusOwners.values.forEach(::abandonFocus)
         }
         recovery = null; diagnostic = null
     }
@@ -419,7 +626,8 @@ class AndroidMediaSink(
                 tracks.entries.removeIf { it.value.isRetired }
                 microphoneOwners.removeIf { it.isRetired }
                 closed.get() && routeDiagnostics.isRetired && videoRetired.get() && !videoThread.isAlive &&
-                    tracks.isEmpty() && microphoneOwners.isEmpty()
+                    tracks.isEmpty() && microphoneOwners.isEmpty() &&
+                    focusOwners.values.all { it.request == null && it.retiring == null }
             }
             if (retired) return true
             val remaining = deadline - System.nanoTime()

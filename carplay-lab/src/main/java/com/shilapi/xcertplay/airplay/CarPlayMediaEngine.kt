@@ -21,6 +21,8 @@ interface MediaSink {
     fun onAudioStarted(id: AudioStreamId, format: AudioFormat, firstSample: Int) {}
     fun onAudioRtp(id: AudioStreamId, format: AudioFormat, rtp: ByteArray, sample: Int) {}
     fun onAudioStopped(id: AudioStreamId) {}
+    /** An admitted SETUP replaces transport, not the intent of the existing output owner. */
+    fun onAudioReplacing(id: AudioStreamId) { onAudioStopped(id) }
     fun supportsMicrophone(format: AudioFormat): Boolean = false
     fun onMicrophoneStarted(id: MicrophoneStreamId, config: MicrophoneConfig) {}
     fun onMicrophoneStopped(id: MicrophoneStreamId) {}
@@ -95,24 +97,35 @@ class CarPlayMediaEngine(
         val format = com.shilapi.xcertplay.media.AudioOutputSupport.withSamplesPerFrame(negotiated, stream["spf"]) ?: return null
         if (!sink.supportsAudio(format)) return null
         val key = outputKey(session, stream) ?: return null
-        val microphone = microphoneConfig(session,type,stream,format)
+        // Calls/Siri retain their port-driven input contract. Default app audio may be output-only.
+        // DiPlay 6d3b8a8ce927cb4b115b8c3881f17619433e93b1: explicit input overrides the port.
+        val inputAllowed = when (audioType) {
+            "default", "compatibility" -> when (val input = stream["input"]) {
+                is Boolean -> input
+                is Number -> input.toInt() != 0
+                else -> true // Absent/malformed flag retains the existing validated-port fallback.
+            }
+            else -> true
+        }
         // A requested main input must not be silently acknowledged as an output-only stream.
-        val inputRequested = type == 100 && stream.containsKey("dataPort") &&
+        val inputRequested = inputAllowed && type == 100 && stream.containsKey("dataPort") &&
             com.shilapi.xcertplay.media.MicrophoneSupport.source(audioType) != null
+        val microphone = if (inputRequested) microphoneConfig(session,type,stream,format) else null
         if (inputRequested && microphone == null) return null
         if (!claim(session)) { microphone?.key?.fill(0); return null }
         val id = Key(session, type, audioType)
         val streamId = AudioStreamId(type, audioType)
-        streams.remove(id)?.close()
+        val replacing = streams.remove(id)
+        replacing?.close()
         audio.remove(id)?.let { sink.onMicrophoneStopped(it.microphoneId) }
-        sink.onAudioStopped(streamId)
+        if (replacing != null) sink.onAudioReplacing(streamId) else sink.onAudioStopped(streamId)
         val microphoneId = MicrophoneStreamId(session,type,audioType,microphoneGeneration.incrementAndGet())
         if (streams.keys.count { it.session === session && it.type in setOf(100, 101, 102) } >= 8) return null
         val meta = AudioMeta(format, stream["streamConnectionID"],
             ((stream["audioLatencyMs"] as? Number)?.toInt() ?: 0).coerceIn(0, 2000), microphoneId)
         val receiver = AudioStream(key, type, onDiagnostic = { reportDiagnostic(session, it) },
             expectedPeer = session.remoteAddress, socketBinding = session.socketBinding, format = format)
-        val (dataPort, controlPort) = receiver.listen(object : AudioStream.Listener {
+        val (dataPort, controlPort) = try { receiver.listen(object : AudioStream.Listener {
             override fun onStarted(firstSample: Int) {
                 synchronized(this@CarPlayMediaEngine) {
                     if (streams[id] !== receiver || session.isClosed) return
@@ -126,7 +139,12 @@ class CarPlayMediaEngine(
                     if (streams[id] === receiver && !session.isClosed) sink.onAudioRtp(streamId,format,rtp,sample)
                 }
             }
-        })
+        }) } catch (failure: Exception) {
+            // Failed replacement is a real retirement, not retained MEDIA continuity.
+            receiver.close()
+            sink.onAudioStopped(streamId)
+            throw failure
+        }
         streams[id] = receiver; audio[id] = meta
         return linkedMapOf("type" to type, "dataPort" to dataPort, "controlPort" to controlPort,
             "streamConnectionID" to unsignedPlistInteger(meta.connectionId))

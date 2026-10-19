@@ -42,9 +42,9 @@ object AirPlayInfoPlist {
         // Pairing-only closure: no buffered media or video-in-car engine.
         require(!config.mainBufferedAudio && !config.videoInCar)
         val displays = arrayListOf<Any?>(
-            displayEntry(config.main, STREAM_TYPE_MAIN_SCREEN, MAIN_UUID),
+            displayEntry(config.main, STREAM_TYPE_MAIN_SCREEN, MAIN_UUID, config.drivingRestrictions),
         )
-        config.cluster?.let { displays.add(displayEntry(it, STREAM_TYPE_ALT_SCREEN, ALT_UUID)) }
+        config.cluster?.let { displays.add(displayEntry(it, STREAM_TYPE_ALT_SCREEN, ALT_UUID, config.drivingRestrictions)) }
 
         val info = linkedMapOf<String, Any?>(
             "sourceVersion" to config.sourceVersion,
@@ -155,7 +155,7 @@ object AirPlayInfoPlist {
         ),
     )
 
-    private fun displayEntry(display: AirPlayDisplayConfig, type: Int, uuid: String): Map<String, Any?> {
+    private fun displayEntry(display: AirPlayDisplayConfig, type: Int, uuid: String, restrict: Boolean): Map<String, Any?> {
         val widthPhysical = AirPlayDisplaySettings.sanitizeReportedPhysicalMm(
             display.widthPhysicalMm ?: AirPlayDisplaySettings.DEFAULT_WIDTH_PHYSICAL_MM,
         )
@@ -179,6 +179,13 @@ object AirPlayInfoPlist {
             "primaryInputDevice" to display.primaryInputDevice,
         )
 
+        // Firmware display-description parser consumes these exact lower-case /info keys.
+        // Explicit safe OAL lab policy, not an inferred OEM/country calibration. Both screens
+        // start restricted; only the main display may subsequently unlock on qualified Park.
+        if (restrict) {
+            entry["limitedUI"] = true
+            entry["limitedUIElements"] = listOf("softKeyboard", "softPhoneKeypad", "nonMusicLists", "musicLists")
+        }
         // Several areas let the car move CarPlay between them (another dock edge, the head unit's split
         // screen) with updateViewArea, without reconnecting.
         val areas = display.viewAreas?.takeIf { it.isNotEmpty() }

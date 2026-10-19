@@ -36,12 +36,10 @@ class WiredVehicleContractIntegrationTest {
             override fun stop() {}
         }}
         val appearance=CarPlayAppearanceBridge(source,Dispatchers.IO,clock,5000)
-        // Compile-safe RED uses the old real constructor until the frozen contract argument exists.
-        val constructor=OalCarPlayIntakeLink::class.java.declaredConstructors.firstOrNull {
-            it.parameterCount==9 && it.parameterTypes.last()==OalCarDataCapabilities::class.java
-        }
-        val target=if(constructor==null) OalCarPlayIntakeLink(false,vehicle,gnss,clock,appearance,night,send,logs)
-            else constructor.newInstance(false,vehicle,gnss,clock,appearance,night,send,logs,caps) as OalCarPlayIntakeLink
+        // Exercise the real frozen-contract API directly. Optional constructor arguments must not
+        // silently send this fixture down an obsolete no-contract compatibility fallback.
+        val target=OalCarPlayIntakeLink(false,vehicle,gnss,clock,appearance,night,send,logs,
+            frozenCapabilities=caps)
         val exact=bootstrap.wrap(target)
         val folder=java.nio.file.Files.createTempDirectory(java.nio.file.Path.of(System.getProperty("java.io.tmpdir")),"vehicle-chain").toFile()
         try {

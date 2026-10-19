@@ -173,6 +173,11 @@ class CarPlayCoordinator(
         if (state.failure != null) publish(state.copy(failure = null))
     }
 
+    /** Presentation only: rejecting a fenced USB candidate must not retire a healthy owner. */
+    internal fun presentFailure(failure: CarPlayFailureUi) = synchronized(lock) {
+        if (!closed) publish(state.copy(failure = failure))
+    }
+
     fun stop() = synchronized(lock) {
         commandEpoch++ // revoke already-queued reconnects even if no runtime exists yet.
         val attempt = current ?: return@synchronized
@@ -205,9 +210,10 @@ class CarPlayCoordinator(
             }
         }
     }
-    fun returnToAndroidAuto(onReturned: () -> Unit = {}) = synchronized(lock) {
+    fun returnToAndroidAuto(preserveFailure: Boolean = false, onReturned: () -> Unit = {}) = synchronized(lock) {
         if (closed) return@synchronized
-        dismissFailure()
+        // Automatic cable retirement releases ownership, not the user's failure receipt.
+        if (!preserveFailure) dismissFailure()
         stop()
         worker.execute {
             val lease = synchronized(lock) { token } ?: return@execute
@@ -220,7 +226,7 @@ class CarPlayCoordinator(
                     ownership.acknowledgeCarPlayRetired(lease)
                     if (ownership.release(lease)) {
                         token = null
-                        publish(CarPlayUiState())
+                        publish(CarPlayUiState(failure = state.failure.takeIf { preserveFailure }))
                         onReturned()
                     }
                 }

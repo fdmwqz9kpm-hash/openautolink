@@ -9,6 +9,11 @@ data class OalCarDataCapabilities(
     val range: Boolean = false,
     val currentEnergy: Boolean = false,
     val maximumEnergy: Boolean = false,
+    /** Frozen, source-qualified display label; not an accessory or energy-model identifier. */
+    val vehicleDisplayName: String? = null,
+    /** Bit per supported iAP2 connector ordinal. Immutable; no powers or adapter inference. */
+    val chargingConnectorMask: Int = 0,
+    val outsideTemperature: Boolean = false,
 )
 
 /**
@@ -40,7 +45,8 @@ class OalIap2CarDataReporter(
     private var suppressed = 0L
 
     init {
-        runCatching { receipt("carplay-car-data-offer location=${capabilities.location} range=${capabilities.range} current=${capabilities.currentEnergy} maximum=${capabilities.maximumEnergy}") }
+        runCatching { receipt("carplay-car-data-offer location=${capabilities.location} range=${capabilities.range} current=${capabilities.currentEnergy} maximum=${capabilities.maximumEnergy}" +
+            if (capabilities.outsideTemperature) " temperature=true" else "") }
     }
 
     @Synchronized fun authenticate() {
@@ -104,10 +110,11 @@ class OalIap2CarDataReporter(
     }
 
     private fun parseEv(frame: Iap2Frame): Set<Int> {
-        val body = checkedBody(frame,mapOf(3 to 0,11 to 0,21 to 0))
+        val body = checkedBody(frame,mapOf(3 to 0,4 to 0,11 to 0,21 to 0))
         val ids = body.list().map { it.id }
         val supported = buildSet {
             if (capabilities.range) { add(3); add(11) }
+            if (capabilities.outsideTemperature) add(4)
             if (capabilities.currentEnergy || capabilities.maximumEnergy) add(21)
         }
         // Retain the prior empty-start compatibility; nonempty starts select status groups,
@@ -131,7 +138,8 @@ class OalIap2CarDataReporter(
         return body
     }
 
-    private fun evMask() = (if (3 in evGroups) 1 else 0) or (if (11 in evGroups) 2 else 0) or (if (21 in evGroups) 4 else 0)
+    private fun evMask() = (if (3 in evGroups) 1 else 0) or (if (11 in evGroups) 2 else 0) or
+        (if (21 in evGroups) 4 else 0) or (if (4 in evGroups) 8 else 0)
 
     private fun requestReceipt(frame: Iap2Frame,result: String,parameter: Int=0,length: Int=0,groups: Int=0) {
         val key = frame.messageId to "request_$result"
@@ -171,11 +179,12 @@ class OalIap2CarDataReporter(
                     it.rangeKm.takeIf { capabilities.range && (3 in evGroups || 11 in evGroups) },
                     it.currentChargeWh.takeIf { capabilities.currentEnergy && 21 in evGroups },
                     it.maxChargeWh.takeIf { capabilities.maximumEnergy && 21 in evGroups },
+                    it.outsideTemperatureC.takeIf { capabilities.outsideTemperature && 4 in evGroups },
                 ))
             }?.let { encoded ->
                 Iap2Messages.buildRaw(0xA101) {
                     Iap2BodyReader.of(encoded).list().filter {
-                        when (it.id) { 3,11 -> it.id in evGroups; 22,23 -> 21 in evGroups; else -> false }
+                        when (it.id) { 3,4,11 -> it.id in evGroups; 22,23 -> 21 in evGroups; else -> false }
                     }.forEach { raw(it.id,it.payload) }
                 }
             }
@@ -207,7 +216,7 @@ class OalIap2CarDataReporter(
             send(frame)
             transmissionCount = (transmissionCount + 1).coerceAtMost(Long.MAX_VALUE - 1)
             val presence = frame.body().asList().fold(0) { mask, parameter ->
-                mask or when (parameter.id) { 0 -> 1; 3 -> 2; 11 -> 4; 22 -> 8; 23 -> 16; else -> 0 }
+                mask or when (parameter.id) { 0 -> 1; 3 -> 2; 11 -> 4; 22 -> 8; 23 -> 16; 4 -> 32; else -> 0 }
             }
             log(frame.messageId,"transmitted",presence)
         } catch (_: Exception) {

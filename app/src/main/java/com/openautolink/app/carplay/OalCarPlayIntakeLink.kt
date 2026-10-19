@@ -13,13 +13,13 @@ internal class OalCarPlayIntakeLink(
     send: (Iap2Frame) -> Unit,
     receipt: (String) -> Unit,
     frozenCapabilities: com.openautolink.carplaylab.intake.OalCarDataCapabilities? = null,
+    restrictionPolicy: CarPlayRestrictionPolicy = CarPlayRestrictionPolicy.from(com.openautolink.app.data.CarPlaySettings()),
+    private val restriction: CarPlayDrivingRestrictionBridge? = if (restrictionPolicy.enabled)
+        CarPlayDrivingRestrictionBridge(com.openautolink.app.input.ProcessVehicleDataRuntime.latestVehicleData(),
+            kotlinx.coroutines.Dispatchers.IO, elapsedMs, 15_000L, restrictionPolicy.alwaysInPark) else null,
+    sendLimitedUI: (Boolean, () -> Boolean) -> Boolean = { _, _ -> false },
 ) : RuntimeCarDataLink {
-    private val capabilities = frozenCapabilities ?: vehicle.snapshot(receipt).let { initial ->
-        com.openautolink.carplaylab.intake.OalCarDataCapabilities(
-            location = gpsQualified, range = initial?.rangeKm != null,
-            currentEnergy = initial?.currentChargeWh != null, maximumEnergy = initial?.maxChargeWh != null,
-        )
-    }
+    private val capabilities = frozenCapabilities ?: vehicle.capabilities(gpsQualified, receipt)
     private val gps = gnss
     private val appearanceBridge = appearance
     private val ready = kotlinx.coroutines.flow.MutableStateFlow(false)
@@ -36,6 +36,13 @@ internal class OalCarPlayIntakeLink(
                 delivered
             }
         }
+    }
+    private val restrictionOwner = kotlinx.coroutines.runBlocking {
+        restriction?.replace(ready, { limited ->
+            !retired.get() && authenticated && ready.value && sendLimitedUI(limited) {
+                !retired.get() && authenticated && ready.value && restriction?.permitsUnlock() == true
+            }
+        }, receipt)
     }
     private val reporter = com.openautolink.carplaylab.intake.OalIap2CarDataReporter(
         capabilities, elapsedMs, gnss::latest, { vehicle.snapshot(receipt) }, gnss::setActive,
@@ -55,7 +62,10 @@ internal class OalCarPlayIntakeLink(
         reporter.tick()
     }
     override fun pollTimeout(maximumMs: Long) = reporter.pollTimeout(maximumMs)
-    override fun revoke() { retired.set(true); authenticated = false; ready.value = false }
+    override fun revoke() {
+        retired.set(true); authenticated = false; ready.value = false
+        restrictionOwner?.let { restriction?.revoke(it) }
+    }
     /** Called on lifecycle/control IO, never an AirPlay listener or event-write callback. */
     override fun close() {
         revoke()
@@ -64,6 +74,8 @@ internal class OalCarPlayIntakeLink(
             while (true) {
                 try {
                     kotlinx.coroutines.runBlocking {
+                        restrictionOwner?.let { restriction?.retire(it) }
+                        restriction?.close()
                         appearanceBridge.retire(appearanceOwner)
                         appearanceBridge.close()
                     }

@@ -32,6 +32,7 @@ import com.openautolink.app.diagnostics.OalLog
 import com.openautolink.app.diagnostics.DiagnosticLog
 import com.openautolink.app.diagnostics.FileLogWriter
 import com.openautolink.app.diagnostics.LogUploader
+import com.openautolink.app.diagnostics.UploadFailureCode
 import com.openautolink.app.diagnostics.UploadResult
 import com.openautolink.app.diagnostics.LogcatCapture
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -80,6 +81,7 @@ data class ProjectionUiState(
     val fileLoggingEnabled: Boolean = false,
     val uploadEnabled: Boolean = false,
     val uploadState: LogUploadState = LogUploadState.IDLE,
+    val uploadStatusMessage: String? = null,
     /**
      * Non-zero while the session is retrying after a drop.
      *
@@ -95,9 +97,6 @@ data class ProjectionUiState(
     val overlayPhoneSwitchButton: Boolean = AppPreferences.DEFAULT_OVERLAY_PHONE_SWITCH_BUTTON,
     val overlayReconnectButton: Boolean = AppPreferences.DEFAULT_OVERLAY_RECONNECT_BUTTON,
 )
-
-/** State of the maintainer log-upload action, drives the floating button color. */
-enum class LogUploadState { IDLE, UPLOADING, SUCCESS, ERROR }
 
 @OptIn(kotlinx.coroutines.FlowPreview::class)
 class ProjectionViewModel(application: Application) : AndroidViewModel(application) {
@@ -184,11 +183,11 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /** Wait for exact CarPlay retirement before handing the cable to AA or a new attempt. */
-    private suspend fun releaseCarPlayUsbOwner() {
+    private suspend fun releaseCarPlayUsbOwner(preserveFailure: Boolean = false) {
         if (!_carPlayState.value.selected) return
         kotlinx.coroutines.withTimeout(15_000) {
             kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
-                carPlayCoordinator.returnToAndroidAuto {
+                carPlayCoordinator.returnToAndroidAuto(preserveFailure = preserveFailure) {
                     if (continuation.isActive) continuation.resumeWith(Result.success(Unit))
                 }
             }
@@ -250,6 +249,10 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                             return@launch
                         }
                         if (unifiedUsbManager?.pendingDevice(generation) == null) return@launch
+                        if (presentBlockedUsbCarPlayFailure(device)) {
+                            unifiedUsbManager?.stay(generation)
+                            return@launch
+                        }
                         val busy = usbSwitchPolicy.shouldPrompt(
                             sessionManager.sessionState.value != SessionState.IDLE,
                             synchronized(connectLock) { connectInFlight }, _carPlayState.value.selected)
@@ -366,7 +369,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     },
                     eligible = { protocol ->
                         val saved = preferences.carPlaySettings.first()
-                        if (automatic && usbOverrideGeneration == null && manager.pendingDevice(generation) != null && usbSwitchPolicy.shouldPrompt(
+                        // Revalidate before claiming/retiring projection, including an old Switch dialog.
+                        val blocked = manager.pendingDevice(generation)?.let(::presentBlockedUsbCarPlayFailure) == true
+                        if (!blocked && automatic && usbOverrideGeneration == null && manager.pendingDevice(generation) != null && usbSwitchPolicy.shouldPrompt(
                                 sessionManager.sessionState.value != SessionState.IDLE,
                                 synchronized(connectLock) { connectInFlight }, _carPlayState.value.selected)) {
                             promptInstead = true
@@ -374,13 +379,14 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                                 if (protocol == com.openautolink.app.carplay.UsbHotPlugSwitchPolicy.Protocol.CARPLAY) "CarPlay" else "Android Auto")
                         }
                         !com.openautolink.app.input.IgnitionMonitor.isOffOrLocked() &&
-                            !promptInstead &&
+                            !promptInstead && !blocked &&
                             (protocol == com.openautolink.app.carplay.UsbHotPlugSwitchPolicy.Protocol.ANDROID_AUTO ||
                                 saved.enabled && saved.videoError() == null)
                     },
                     claimed = {
                         // Revoke queued wireless starts BEFORE awaited teardown; never write a preference.
                         usbHandoff.claim(generation)
+                        carPlayCoordinator.dismissFailure()
                         _carPlayStartupGuidance.value = null
                         projectionLaunchPolicy.suppress()
                         usbPolicyEpoch.incrementAndGet()
@@ -427,7 +433,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         try {
             if (dispatchEpoch != usbDispatchEpoch.get()) return
             usbSwitchPolicy.finish(generation,
-                retire = { retireUsbProjection() },
+                retire = { retireUsbProjection(preserveCarPlayFailure = true) },
                 cleared = { clearUsbOverrideState() },
                 restore = { restoreNormalProjection() })
         } catch (failure: Exception) {
@@ -436,8 +442,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         } finally { usbDispatchMutex.unlock() }
     }
 
-    private suspend fun retireUsbProjection() = usbHandoff.retire(
-        releaseCarPlay = { if (_carPlayState.value.selected) releaseCarPlayUsbOwner() },
+    private suspend fun retireUsbProjection(preserveCarPlayFailure: Boolean = false) = usbHandoff.retire(
+        releaseCarPlay = { if (_carPlayState.value.selected) releaseCarPlayUsbOwner(preserveCarPlayFailure) },
         stopAndroidAuto = { sessionManager.stop() },
     )
 
@@ -446,6 +452,24 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { restartUnifiedUsb() }
     }
     fun dismissUsbSwitchFailure() = usbHandoff.dismissFailure()
+
+    private fun presentBlockedUsbCarPlayFailure(device: android.hardware.usb.UsbDevice): Boolean {
+        if (device.vendorId != 0x05ac) return false
+        val failure = com.openautolink.app.carplay.OalUsbCarPlayRuntime
+            .blockedAttachmentFailure(getApplication(), device) ?: return false
+        carPlayCoordinator.presentFailure(failure)
+        return true
+    }
+
+    /** Visibility only; exact picker receipts and runtime permission consent still gate admission. */
+    fun isUsbCarPlayRecoveryBlocked(candidate: com.openautolink.app.transport.usb.UsbDeviceCandidate): Boolean {
+        if (candidate.vendorId != 0x05ac) return false
+        val usb = getApplication<Application>().getSystemService(android.hardware.usb.UsbManager::class.java) ?: return false
+        val device = usb.deviceList[candidate.deviceName] ?: return false
+        if (device.deviceId != candidate.deviceId || device.vendorId != candidate.vendorId ||
+            device.productId != candidate.productId) return false
+        return com.openautolink.app.carplay.OalUsbCarPlayRuntime.blockedAttachmentFailure(getApplication(), device) != null
+    }
 
     private suspend fun restoreNormalProjection() {
         _carPlayStartupGuidance.value = null
@@ -527,7 +551,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     onDisplayQualified = { _carPlayDisplay.value = it },
                     onReenumerationStarted = beginTransition, onReplacementAccepted = acceptReplacement,
                     initialPermissionOwner = initialPermissionOwner,
-                    consumeExplicitPermissionRetry = consumeExplicitPermissionRetry)
+                    consumeExplicitPermissionRetry = consumeExplicitPermissionRetry,
+                    restrictionPolicy = com.openautolink.app.carplay.CarPlayRestrictionPolicy.from(saved))
                 // The captured valid surface qualified this session's geometry only. The
                 // coordinator installs the latest presentation after factory completion.
                 runtime.detachSurface(surface)
@@ -549,6 +574,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             val saved = preferences.carPlaySettings.first()
             if (!saved.enabled) return@launch
             if (saved.connectionMode == "usb") {
+                val usb = getApplication<Application>().getSystemService(android.hardware.usb.UsbManager::class.java)
+                val device = usb?.deviceList?.values?.singleOrNull { it.vendorId == 0x05ac }
+                if (device != null && presentBlockedUsbCarPlayFailure(device)) return@launch
                 restartUnifiedUsb()
                 return@launch
             }
@@ -598,6 +626,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     fun stopCarPlay() { carPlayCoordinator.stop() }
     fun dismissCarPlayFailure() { carPlayCoordinator.dismissFailure() }
     fun returnToAndroidAuto() {
+        // A wired failure already restored AA after exact retirement. Do not reconnect it again.
+        if (!_carPlayState.value.selected) { dismissCarPlayFailure(); return }
         carPlayCoordinator.returnToAndroidAuto {
             viewModelScope.launch {
                 carPlayRuntime = null
@@ -740,8 +770,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     private var fileLogWriter: FileLogWriter? = null
     private var logcatCapture: LogcatCapture? = null
 
-    // Maintainer log-upload action state (drives the floating Upload button color).
-    private val _uploadState = MutableStateFlow(LogUploadState.IDLE)
+    // Upload feedback belongs to the ViewModel, not the disposable menu.
+    private val logUploadAction = LogUploadAction()
 
     // Pending surface — stored when surfaceCreated fires before decoder exists.
     // Attached to decoder on session start or when decoder becomes available.
@@ -807,7 +837,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         _fileLoggingPath,
         preferences.fileLoggingEnabled,
         preferences.logUploadEnabled,
-        _uploadState,
+        logUploadAction.feedback,
         preferences.simulateIgnitionButton,
         sessionManager.reconnectAttempt,
         preferences.overlayStatsButton,
@@ -843,7 +873,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             fileLoggingPath = values[25] as? String,
             fileLoggingEnabled = values[26] as Boolean,
             uploadEnabled = values[27] as Boolean,
-            uploadState = values[28] as LogUploadState,
+            uploadState = (values[28] as LogUploadFeedback).state,
+            uploadStatusMessage = (values[28] as LogUploadFeedback).message,
             simulateIgnitionButton = values[29] as Boolean,
             reconnectAttempt = values[30] as Int,
             overlayStatsButton = values[31] as Boolean,
@@ -1490,6 +1521,12 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             connect(overrideIp = null)
         }
     }
+
+    /** Fast, read-only diagnostic gate; capture leases independently fence late recorder retirement. */
+    fun microphoneDiagnosticEligible(): Boolean =
+        usbOverrideGeneration == null && !connectInFlight && !_carPlayState.value.busy &&
+            sessionManager.sessionState.value == SessionState.IDLE &&
+            _usbHotPlugPrompt.value == null
 
     fun disconnect() {
         // stop() closes the native transport, which blocks until the native side
@@ -2712,53 +2749,21 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
      *  mount event \u2014 they'll have to toggle the pref off/on or restart the app. */
     @Volatile private var autoUsbLoggingActive = false
 
-    /**
-     * Maintainer-only: zip recent logs and POST them to the configured
-     * endpoint. No-ops (with an ERROR flash) if the feature is unconfigured.
-     * Drives [ProjectionUiState.uploadState] so the floating button shows
-     * amber (uploading) -> green (success) / red (error), reverting after 3s.
-     */
+    /** Maintainer-only manual upload; the action owns status independently of the menu. */
     fun uploadLogsNow() {
-        if (_uploadState.value == LogUploadState.UPLOADING) return
-        _uploadState.value = LogUploadState.UPLOADING
-        viewModelScope.launch {
+        logUploadAction.upload(viewModelScope) {
             if (!preferences.logUploadEnabled.first()) {
-                flashUpload(LogUploadState.ERROR)
-                return@launch
+                return@upload UploadResult.Failure("upload disabled", UploadFailureCode.DISABLED)
             }
             val url = preferences.logUploadUrl.first()
             val token = preferences.logUploadToken.first()
             val label = preferences.logUploadDeviceLabel.first()
             if (url.isBlank() || token.isBlank()) {
                 OalLog.w(TAG, "Upload tapped but URL/token not configured")
-                flashUpload(LogUploadState.ERROR)
-                return@launch
+                return@upload UploadResult.Failure("upload not configured", UploadFailureCode.NOT_CONFIGURED)
             }
-            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 LogUploader(getApplication()).upload(url, token, label)
-            }
-            android.widget.Toast.makeText(
-                getApplication(),
-                when (result) {
-                    is UploadResult.Success -> "Uploaded: ${result.coverage}"
-                    is UploadResult.Failure -> "Upload failed: ${result.reason}"
-                },
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-            flashUpload(
-                if (result is UploadResult.Success) LogUploadState.SUCCESS
-                else LogUploadState.ERROR
-            )
-        }
-    }
-
-    /** Set the upload state; auto-revert SUCCESS/ERROR to IDLE after 3s. */
-    private fun flashUpload(state: LogUploadState) {
-        _uploadState.value = state
-        if (state == LogUploadState.SUCCESS || state == LogUploadState.ERROR) {
-            viewModelScope.launch {
-                kotlinx.coroutines.delay(3000)
-                if (_uploadState.value == state) _uploadState.value = LogUploadState.IDLE
             }
         }
     }

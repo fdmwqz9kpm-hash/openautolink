@@ -118,7 +118,7 @@ class ClusterLateRecoveryTest {
     }
 
     @Test
-    fun activeCacheMissSendsLoadingTripWithoutEndingOrReplayingOldTurn() {
+    fun activeCacheMissEndsDisplayedGuidanceAndRestartsSameEpochWhenReady() {
         ClusterMainSession().onCreateScreen(Intent())
         val trips = mutableListOf<androidx.car.app.navigation.model.Trip>()
         every { navigation.updateTrip(capture(trips)) } just Runs
@@ -134,20 +134,219 @@ class ClusterLateRecoveryTest {
             link.handle(com.shilapi.xcertplay.iap2.message.Iap2Messages.buildRaw(0x5201) { u8(1,1); u16List(13,listOf(8)) })
             awaitPublication(receipts, false)
             advance(300)
-            verify(exactly = 0) { navigation.navigationEnded() }
+            verify(exactly = 1) { navigation.navigationEnded() }
             assertEquals(epoch, ClusterNavigationState.recoveryDemand.value)
             assertTrue(ClusterNavigationState.isActive)
             assertNull(ClusterNavigationState.state.value)
-            assertTrue(trips.last().isLoading)
-            assertTrue(trips.last().steps.isEmpty())
-            assertTrue(trips.last().stepTravelEstimates.isEmpty())
+            assertFalse(ClusterNavigationState.isRouteSuppressed)
+            assertEquals(1, trips.size)
+            assertTrue(trips.none { it.isLoading })
             link.handle(com.shilapi.xcertplay.iap2.message.Iap2Messages.buildRaw(0x5202) { u16(1,8); u8(3,3) })
             awaitPublication(receipts, true)
             advance(300)
             assertEquals(epoch, ClusterNavigationState.recoveryDemand.value)
-            verify(exactly = 1) { navigation.navigationStarted() }
+            verify(exactly = 2) { navigation.navigationStarted() }
             assertFalse(trips.last().isLoading)
         } finally { link.close() }
+    }
+
+    @Test
+    fun initiallyUnavailableRouteNeverStartsOrSendsLoadingTrip() {
+        ClusterMainSession().onCreateScreen(Intent())
+        advance(300) // Idle binding is not navigation ownership.
+        ClusterNavigationState.updateHost(null)
+        val epoch = ClusterNavigationState.recoveryDemand.value
+        advance(300)
+        verify(exactly = 0) { navigation.navigationStarted() }
+        verify(exactly = 0) { navigation.navigationEnded() }
+        verify(exactly = 0) { navigation.updateTrip(any()) }
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        assertEquals(epoch, ClusterNavigationState.recoveryDemand.value)
+        verify(exactly = 1) { navigation.navigationStarted() }
+        verify(exactly = 1) { navigation.updateTrip(match { !it.isLoading && it.steps.size == 1 }) }
+    }
+
+    @Test
+    fun lateBindingRetainsUnavailableEpochWithoutClaimingHostNavigation() {
+        ClusterNavigationState.updateHost(null)
+        val epoch = ClusterNavigationState.recoveryDemand.value
+        advance(300)
+        ClusterMainSession().onCreateScreen(Intent())
+        advance(300)
+        verify(exactly = 0) { navigation.navigationStarted() }
+        verify(exactly = 0) { navigation.updateTrip(any()) }
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        assertEquals(epoch, ClusterNavigationState.recoveryDemand.value)
+        verify(exactly = 1) { navigation.navigationStarted() }
+        verify(exactly = 1) { navigation.updateTrip(any()) }
+    }
+
+    @Test
+    fun hostStopDuringUnavailableRouteSuppressesReadyUntilNewEpoch() {
+        ClusterMainSession().onCreateScreen(Intent())
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        ClusterNavigationState.updateHost(null)
+        advance(300)
+        hostCallbacks.last().onStopNavigation()
+        assertTrue(ClusterNavigationState.isRouteSuppressed)
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        verify(exactly = 1) { navigation.navigationStarted() }
+        verify(exactly = 1) { navigation.updateTrip(any()) }
+        verify(exactly = 1) { navigation.navigationEnded() }
+        ClusterNavigationState.clearHost()
+        advance(300)
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        verify(exactly = 2) { navigation.navigationStarted() }
+        verify(exactly = 2) { navigation.updateTrip(any()) }
+    }
+
+    @Test
+    fun clearingUnavailableRouteDoesNotEndTwiceOrResurrectRetainedTurn() {
+        ClusterMainSession().onCreateScreen(Intent())
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        val epoch = ClusterNavigationState.recoveryDemand.value
+        ClusterNavigationState.updateHost(null)
+        advance(300)
+        ClusterNavigationState.clearHost()
+        advance(30_000)
+        verify(exactly = 1) { navigation.navigationStarted() }
+        verify(exactly = 1) { navigation.navigationEnded() }
+        verify(exactly = 1) { navigation.updateTrip(any()) }
+        assertFalse(ClusterNavigationState.isActive)
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        assertNotEquals(epoch, ClusterNavigationState.recoveryDemand.value)
+        verify(exactly = 2) { navigation.navigationStarted() }
+    }
+
+    @Test
+    fun failedTripBuildClearsPriorTurnOnceAndRecoversOnFreshInstruction() {
+        ClusterMainSession().onCreateScreen(Intent())
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        val epoch = ClusterNavigationState.recoveryDemand.value
+        val bad = maneuver.copy(roadName = "private route")
+        mockkStatic("com.openautolink.app.cluster.OalClusterSessionKt")
+        every { buildManeuver(bad, any()) } throws IllegalArgumentException("private route")
+        ClusterNavigationState.updateHost(bad)
+        advance(300)
+        verify(exactly = 1) { navigation.navigationEnded() }
+        verify(exactly = 1) { navigation.updateTrip(any()) }
+        assertFalse(ClusterNavigationState.isRouteSuppressed)
+        // Forecast refresh invokes the real collector again with the same bad instruction.
+        repeat(3) {
+            ClusterNavigationState.vehicleEnergyForecast.value = mockk(relaxed = true)
+            advance(300)
+        }
+        verify(exactly = 1) { buildManeuver(bad, any()) }
+        verify(exactly = 1) { navigation.navigationEnded() }
+        verify(exactly = 1) { navigation.navigationStarted() }
+        ClusterNavigationState.updateHost(maneuver.copy(distanceMeters = 90))
+        advance(300)
+        assertEquals(epoch, ClusterNavigationState.recoveryDemand.value)
+        verify(exactly = 2) { navigation.navigationStarted() }
+        verify(exactly = 2) { navigation.updateTrip(any()) }
+    }
+
+    @Test
+    fun failedInitialTripBuildNeverClaimsNavigationAndDoesNotRetryByTimer() {
+        ClusterMainSession().onCreateScreen(Intent())
+        mockkStatic("com.openautolink.app.cluster.OalClusterSessionKt")
+        every { buildManeuver(maneuver, any()) } throws IllegalArgumentException("private route")
+        ClusterNavigationState.updateHost(maneuver)
+        advance(30_000)
+        verify(exactly = 1) { buildManeuver(maneuver, any()) }
+        verify(exactly = 0) { navigation.navigationStarted() }
+        verify(exactly = 0) { navigation.navigationEnded() }
+        verify(exactly = 0) { navigation.updateTrip(any()) }
+        assertTrue(ClusterNavigationState.isActive)
+        assertFalse(ClusterNavigationState.isRouteSuppressed)
+    }
+
+    @Test
+    fun failedTripSubmissionEndsOldTurnAndRestartsOnlyOnFreshInstruction() {
+        ClusterMainSession().onCreateScreen(Intent())
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        every { navigation.updateTrip(any()) } throws IllegalStateException("host rejected")
+        ClusterNavigationState.updateHost(maneuver.copy(distanceMeters = 90))
+        advance(300)
+        verify(exactly = 1) { navigation.navigationEnded() }
+        repeat(3) {
+            ClusterNavigationState.vehicleEnergyForecast.value = mockk(relaxed = true)
+            advance(300)
+        }
+        verify(exactly = 2) { navigation.updateTrip(any()) }
+        verify(exactly = 1) { navigation.navigationStarted() }
+        every { navigation.updateTrip(any()) } just Runs
+        ClusterNavigationState.updateHost(maneuver.copy(distanceMeters = 80))
+        advance(300)
+        verify(exactly = 2) { navigation.navigationStarted() }
+        verify(exactly = 3) { navigation.updateTrip(any()) }
+    }
+
+    @Test
+    fun orderedAvailabilityChurnNeverSendsLoadingOrReplaysOldTurn() {
+        val trips = mutableListOf<androidx.car.app.navigation.model.Trip>()
+        every { navigation.updateTrip(capture(trips)) } just Runs
+        ClusterMainSession().onCreateScreen(Intent())
+        ClusterNavigationState.updateHost(null)
+        advance(300)
+        ClusterNavigationState.updateHost(maneuver)
+        advance(300)
+        val epoch = ClusterNavigationState.recoveryDemand.value
+        ClusterNavigationState.updateHost(null)
+        advance(300)
+        ClusterNavigationState.updateHost(maneuver.copy(type = ManeuverType.TURN_RIGHT))
+        advance(300)
+        ClusterNavigationState.updateHost(null)
+        advance(300)
+        ClusterNavigationState.clearHost()
+        advance(300)
+        verifyOrder {
+            navigation.navigationStarted()
+            navigation.updateTrip(any())
+            navigation.navigationEnded()
+            navigation.navigationStarted()
+            navigation.updateTrip(any())
+            navigation.navigationEnded()
+        }
+        verify(exactly = 2) { navigation.navigationStarted() }
+        verify(exactly = 2) { navigation.navigationEnded() }
+        assertEquals(2, trips.size)
+        assertTrue(trips.none { it.isLoading })
+        assertEquals(androidx.car.app.navigation.model.Maneuver.TYPE_TURN_NORMAL_LEFT, trips[0].steps.single().maneuver!!.type)
+        assertEquals(androidx.car.app.navigation.model.Maneuver.TYPE_TURN_NORMAL_RIGHT, trips[1].steps.single().maneuver!!.type)
+        assertNotNull(epoch)
+    }
+
+    @Test
+    fun availabilityDiagnosticIsFiniteTransitionOnlyAndContainsNoRouteText() {
+        val outcomes = mutableListOf<String>()
+        mockkObject(com.openautolink.app.diagnostics.DiagnosticLog)
+        every { com.openautolink.app.diagnostics.DiagnosticLog.i("cluster", capture(outcomes)) } just Runs
+        ClusterMainSession().onCreateScreen(Intent())
+        advance(300)
+        ClusterNavigationState.updateHost(null)
+        advance(300)
+        repeat(3) {
+            ClusterNavigationState.vehicleEnergyForecast.value = mockk(relaxed = true)
+            advance(300)
+        }
+        ClusterNavigationState.updateHost(maneuver.copy(roadName = "private route", cue = "private cue"))
+        advance(300)
+        val lines = outcomes.filter { it.startsWith("Guidance availability outcome=") }
+        assertEquals(3, lines.size)
+        assertTrue(lines[0].contains("outcome=idle "))
+        assertTrue(lines[1].contains("outcome=unavailable "))
+        assertTrue(lines[2].contains("outcome=available "))
+        assertTrue(lines.none { it.contains("private") })
     }
 
     @Test
@@ -204,13 +403,16 @@ class ClusterLateRecoveryTest {
     }
 
     @Test
-    fun loadingSnapshotRevokesArrivalEvenBeforeDebouncedTripSubmission() {
+    fun unavailableSnapshotRevokesArrivalBeforeDebouncedWithdrawal() {
         ClusterMainSession().onCreateScreen(Intent())
         ClusterNavigationState.update(maneuver.copy(type = ManeuverType.DESTINATION))
-        advance(10_100) // Timer is due at 10_200; next Trip submission is due at 10_300.
+        advance(10_100) // Timer is due at 10_200; withdrawal is due at 10_300.
         ClusterNavigationState.updateHost(null)
-        advance(200)
+        advance(100)
         verify(exactly = 0) { navigation.navigationEnded() }
+        assertFalse(ClusterNavigationState.isRouteSuppressed)
+        advance(100)
+        verify(exactly = 1) { navigation.navigationEnded() }
         assertFalse(ClusterNavigationState.isRouteSuppressed)
     }
 

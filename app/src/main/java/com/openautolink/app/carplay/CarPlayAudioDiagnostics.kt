@@ -7,6 +7,13 @@ object CarPlayAudioDiagnostics {
     private const val number = "[0-9]{1,19}"
     private const val optional = "($number|null)"
     private const val bool = "(true|false)"
+    private const val micRequestedSource = "(MIC|VOICE_COMMUNICATION|VOICE_RECOGNITION)"
+    private const val micObservedSources = "DEFAULT|MIC|VOICE_UPLINK|VOICE_DOWNLINK|VOICE_CALL|CAMCORDER|VOICE_RECOGNITION|VOICE_COMMUNICATION|REMOTE_SUBMIX|UNPROCESSED|VOICE_PERFORMANCE"
+    private const val micMissing = "unknown|unavailable|absent"
+    private const val micRate = "(8000|16000|24000|32000|44100|48000|96000|192000|$micMissing)"
+    private const val micChannels = "(mono|stereo|$micMissing)"
+    private const val micEncoding = "(pcm8|pcm16|float|$micMissing)"
+    private const val micEffectCount = "([0-9]|1[0-6])"
     private const val btState = "(disconnected|connecting|connected|disconnecting|stopped|started|off|turning_off|on|turning_on|unknown)"
     // Negotiated engine values are lowercased; offer rows use the protocol spelling.
     private const val audioType = "(compatibility|default|alert|media|telephony|speechRecognition|speechrecognition)"
@@ -23,6 +30,7 @@ object CarPlayAudioDiagnostics {
         "CarPlay USB transition attempt=1 result=(accepted|rejected) fallback=$bool",
         "CarPlay USB selection configurationId=$usbByte usbmuxInterfaceId=$usbByte usbmuxAlt=$usbByte ncmControlInterfaceId=$usbByte ncmControlAlt=$usbByte ncmDataInterfaceId=$usbByte ncmDataAlt=$usbByte",
         "USB network stage=packet direction=(in|out) packetBytes=$packetBytes $networkClass peerMacKnown=$bool decision=(forward|filter-drop|mac-unknown-drop) filterDrops=([0-9]|[12][0-9]|3[0-2]) macUnknownDrops=([0-9]|[12][0-9]|3[0-2]) sinceOpenUs=$number",
+        "USB network stage=nd-receipt receipt=[1-8] icmp=(ns|na) shape=(complete|truncated|invalid) source=(unspecified|specified) target=(host|other|unknown) hopLimit=(valid|invalid) checksum=(valid|invalid|unknown) tunWrite=(written|failed)",
         "USB network stage=send-start attempt=$networkAttempt packetBytes=$packetBytes $networkClass startMonoNs=$number",
         "USB network stage=send-end attempt=$networkAttempt packetBytes=$packetBytes $networkClass result=(full|failed|short) transferred=-?[0-9]{1,10} blockBytes=$packetBytes timeoutMs=[0-9]{1,10} startMonoNs=$number elapsedUs=$number sinceOpenUs=$number",
         "NCM startup attempt=$number timeoutMs=[0-9]{1,10} transferred=-?[0-9]{1,10} blockBytes=[0-9]{1,10} ready=[01] writeStartMonoNs=$number writeElapsedUs=$number sinceOpenUs=$number",
@@ -69,12 +77,13 @@ object CarPlayAudioDiagnostics {
         "media stage=video-recovery reason=(presentation|config-change|queue-reset|unanchored|input-timeout|input-size|decoder-failed) receipt=$number count=$number",
         "media stage=runtime-control-failed type=$failure",
         "media stage=(runtime-message-received|runtime-subscriptions-sent|video-first-frame-confirmed) count=$number",
-        "carplay-car-data id=(0|65530|65531|65532|41216|41217|41218) reason=(authenticated|retired|unauthenticated|started|stopped|disabled|unsupported_request|source_absent|transmitted|send_failed) count=$number fields=([0-9]|[12][0-9]|3[01]) suppressed=$number",
-        "carplay-car-data-offer location=$bool range=$bool current=$bool maximum=$bool",
-        "carplay-car-data-request id=(65530|41216) bytes=[0-9]{1,5} result=(accepted|disabled|malformed|oversized|duplicate|unsupported_id|width|interval_bounds|orphan_interval|no_supported_groups) parameter=[0-9]{1,5} length=[0-9]{1,3} groups=[0-7] ggaMs=[0-9]{1,5} rmcMs=[0-9]{1,5}",
-        "carplay-car-data-source property=(range|current|maximum) reason=(available|absent|fuel|metadata|generation|source|inactive|status|timestamp|source_age|receipt_age|bounds|inconsistent) status=(-1|[0-9]) active=$bool generation=$bool sourceAgeMs=(-1|[0-9]{1,8}) receiptAgeMs=(-1|[0-9]{1,8})",
+        "carplay-car-data id=(0|65530|65531|65532|41216|41217|41218) reason=(authenticated|retired|unauthenticated|started|stopped|disabled|unsupported_request|source_absent|transmitted|send_failed) count=$number fields=([0-9]|[1-5][0-9]|6[0-3]) suppressed=$number",
+        "carplay-car-data-offer location=$bool range=$bool current=$bool maximum=$bool( temperature=true)?",
+        "carplay-car-data-request id=(65530|41216) bytes=[0-9]{1,5} result=(accepted|disabled|malformed|oversized|duplicate|unsupported_id|width|interval_bounds|orphan_interval|no_supported_groups) parameter=[0-9]{1,5} length=[0-9]{1,3} groups=([0-9]|1[0-5]) ggaMs=[0-9]{1,5} rmcMs=[0-9]{1,5}",
+        "carplay-car-data-source property=(range|current|maximum|temperature) reason=(available|absent|fuel|metadata|generation|source|inactive|status|timestamp|source_age|receipt_age|bounds|inconsistent) status=(-1|[0-9]) active=$bool generation=$bool sourceAgeMs=(-1|[0-9]{1,8}) receiptAgeMs=(-1|[0-9]{1,8})",
         "carplay-car-data-bootstrap id=(65530|65532|41216|41218) result=(deferred|oversized|retired)",
         "carplay-appearance reason=(transmitted|send_failed) count=$number",
+        "carplay-restriction reason=(absent|metadata|source|generation|inactive|status|timestamp|stale|not_park|actual_park|user_override) limited=$bool result=(transmitted|send_failed) count=$number",
         "carplay-enrollment stage=commit accepted=$bool",
         "carplay-enrollment stage=awaiting-selected-bootstrap-request",
         "carplay-enrollment stage=authorized windowMs=120000 boundary=(selected-bootstrap-request|explicit-manual-peer); first-client race remains possible",
@@ -104,6 +113,7 @@ object CarPlayAudioDiagnostics {
         "media stage=(audio-decoder-configured|audio-output-failed) codec=$codec",
         "media stage=audiotrack-written bytes=$number; human audibility unverified",
         "media stage=(audio-focus-change|audio-focus-granted|audio-focus-denied|audio-owner-limit|audio-retirement-pending|audio-queue-overflow|audio-decoder-backpressure|audio-write-backpressure|microphone-owner-busy|session-ended)",
+        "media stage=audio-focus-owner purpose=(media|call|ring|assistant) action=(request|abandon|pending) usage=(1|2|6|16) content=(1|2|4) gain=(1|2) revision=$number",
         "media stage=audio-focus-request reason=(stream-start|user-play) result=(granted|denied|retained|closed) revision=$number volumePercent=(0|20|100) mute=(permanent-loss|transient|denied|duck|unmuted)",
         "media stage=audio-mute reason=(stream-start|focus-change) revision=$number volumePercent=(0|20|100) mute=(permanent-loss|transient|denied|duck|unmuted)",
         "media stage=audio-volume stream=$number type=(100|101|102) audioType=$audioType codec=$codec scope=own requestedPercent=(0|20|100) effectivePercent=(0|20|100|null) mute=(permanent-loss|transient|denied|duck|unmuted) revision=$number",
@@ -118,6 +128,11 @@ object CarPlayAudioDiagnostics {
         "media stage=audio-focus-change change=(-3|-2|-1|1) volumePercent=(0|20|100)",
         "media stage=media-command-ingress command=(PLAY|PAUSE|STOP|NEXT|PREVIOUS) controller=(bluetooth|car-service|system-ui|oem|other|unknown) sequence=$number elapsedMs=$number",
         "media stage=media-command-queue index=[0-5] outcome=(accepted|deferred|declined) reason=(admitted|queue-full|stale-owner|invalid-index)",
+        "media stage=media-play-disposition result=(granted|retained) transport=permitted output=permitted",
+        "media stage=media-play-disposition result=(deferred|interrupted) transport=permitted output=withheld",
+        "media stage=media-play-disposition result=(denied|closed|stale-owner) transport=withheld output=withheld",
+        "media stage=audio-mute reason=stream-start revision=$number volumePercent=0 mute=deferred",
+        "media stage=audio-volume stream=$number type=(100|102) audioType=$audioType codec=$codec scope=own requestedPercent=0 effectivePercent=(0|null) mute=deferred revision=$number",
         "media stage=media-focus-recovery reason=user-play result=(permitted|denied|stale-owner)",
         "BENCH_DIAG bluetoothHandoff requested=true policy=observe-only( handling=(unsupported-native-profile-handover|own-bootstrap-only))?",
         "carplay-bt event=(hfp-client|a2dp-sink) state=(disconnected|connecting|connected|disconnecting|unknown) previous=(disconnected|connecting|connected|disconnecting|unknown) scope=device owner=unknown",
@@ -129,6 +144,8 @@ object CarPlayAudioDiagnostics {
         "media stage=media-control index=[1-5] outcome=(sent|failed)",
         "media stage=microphone-capture type=100 audioType=(default|telephony|speechrecognition) frames=$number nonzeroFrames=$number state=(1|3|unknown) ended=$bool",
         "media stage=microphone-policy scope=own source=(MIC|VOICE_COMMUNICATION|VOICE_RECOGNITION) rate=(24000|48000) permission=(granted|denied|unknown) mute=(true|false|unknown) route=(builtin|wired|usb|bluetooth|other|none|unknown) silenced=(true|false|unknown) result=(ok|partial|unavailable)",
+        "media stage=microphone-config scope=own requested=$micRequestedSource rate=(24000|48000) recorder=($micObservedSources|unknown|unavailable) mode=(normal|ringtone|call|communication|unknown|unavailable) config=(present|absent|unavailable) client=($micObservedSources|$micMissing) active=($micObservedSources|$micMissing) clientRate=$micRate deviceRate=$micRate clientChannels=$micChannels deviceChannels=$micChannels clientEncoding=$micEncoding deviceEncoding=$micEncoding route=(builtin|wired|usb|bluetooth|bus|none|$micMissing)",
+        "media stage=microphone-effects scope=own source=$micRequestedSource rate=(24000|48000) chain=(client|capture) result=(ok|partial|truncated|absent|unavailable) examined=$micEffectCount truncated=$bool aec=(true|false|unknown) ns=(true|false|unknown) agc=(true|false|unknown) other=$micEffectCount",
         "media stage=microphone-started type=100; uplink audibility unverified",
         "media stage=microphone-datagram-sent packets=$number; phone receipt unverified",
         "media stage=microphone-failed type=100 errorType=$failure",
@@ -154,6 +171,7 @@ class CarPlayAudioDiagnosticReporter(
     private var emitted = 0
     private var suppressed = 0L
     private var networkCompletions = 0
+    private var neighborReceipts = 0
     private var networkFirstFull = false
 
     fun record(message: String) {
@@ -161,13 +179,18 @@ class CarPlayAudioDiagnosticReporter(
         // Completion reservations are lifetime-bounded independently of ordinary detail rate.
         // A busy packet/status window must not erase an already-started USB attempt's result.
         val attempt = networkCompletionAttempt.find(message)?.groupValues?.get(1)?.toInt()
+        val neighbor = neighborReceipt.find(message)?.groupValues?.get(1)?.toInt()
         val firstFull = message.startsWith("NCM startup ") && message.contains(" ready=1 ")
-        if (attempt != null || firstFull) {
+        if (attempt != null || neighbor != null || firstFull) {
             val admitted = synchronized(this) {
                 if (attempt != null) {
                     val bit = 1 shl (attempt - 1) // Exact sanitizer restricts attempts to 1..16.
                     if (networkCompletions and bit != 0) false
                     else { networkCompletions = networkCompletions or bit; true }
+                } else if (neighbor != null) {
+                    val bit = 1 shl (neighbor - 1) // Exact sanitizer restricts receipts to 1..8.
+                    if (neighborReceipts and bit != 0) false
+                    else { neighborReceipts = neighborReceipts or bit; true }
                 } else if (networkFirstFull) false
                 else { networkFirstFull = true; true }
             }
@@ -195,5 +218,6 @@ class CarPlayAudioDiagnosticReporter(
     companion object {
         const val MAX_EVENTS_PER_SECOND = 64
         private val networkCompletionAttempt = Regex("^USB network stage=send-end attempt=([0-9]+) ")
+        private val neighborReceipt = Regex("^USB network stage=nd-receipt receipt=([1-8]) ")
     }
 }

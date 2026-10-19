@@ -45,6 +45,61 @@ internal class UsbNetworkStartupDiagnostics(
         runCatching { sink(line) }
     }
 
+    @Volatile private var neighborReceipts = 0
+    data class Neighbor(val receipt: Int, val fields: String)
+
+    /** Separate first-eight allowance: unrelated packets cannot bury neighbor-discovery evidence. */
+    fun beginNeighbor(packet: ByteArray, hostIpv6: ByteArray? = null): Neighbor? {
+        if (neighborReceipts >= 8 || !detailsEnabled()) return null
+        return synchronized(this) {
+            if (neighborReceipts >= 8 || !detailsEnabled()) return null
+            if (packet.size < 41 || (packet[0].toInt() ushr 4 and 15) != 6 ||
+                packet[6].toInt() and 255 != 58) return null
+            val kind = when (packet[40].toInt() and 255) { 135 -> "ns"; 136 -> "na"; else -> return null }
+            val length = ((packet[4].toInt() and 255) shl 8) or (packet[5].toInt() and 255)
+            val complete = length >= 24 && length + 40 <= packet.size
+            val shape = when {
+                length + 40 > packet.size -> "truncated"
+                !complete || packet[41].toInt() != 0 -> "invalid"
+                else -> "complete"
+            }
+            val source = if ((8 until 24).all { packet[it] == 0.toByte() }) "unspecified" else "specified"
+            val hop = if (packet[7].toInt() and 255 == 255) "valid" else "invalid"
+            val checksum = if (!complete) "unknown" else if (validNeighborChecksum(packet, length)) "valid" else "invalid"
+            val target = when {
+                !complete || hostIpv6?.size != 16 -> "unknown"
+                (0 until 16).all { packet[48 + it] == hostIpv6[it] } -> "host"
+                else -> "other"
+            }
+            neighborReceipts++
+            Neighbor(neighborReceipts, "icmp=$kind shape=$shape source=$source target=$target hopLimit=$hop checksum=$checksum")
+        }
+    }
+
+    fun completeNeighbor(neighbor: Neighbor?, written: Boolean) {
+        if (neighbor == null || !detailsEnabled()) return
+        synchronized(this) { if (!detailsEnabled()) return }
+        val result = if (written) "written" else "failed"
+        runCatching { sink("USB network stage=nd-receipt receipt=${neighbor.receipt} ${neighbor.fields} tunWrite=$result") }
+    }
+
+    // Only a direct, complete ICMPv6 payload is examined; no extension or option traversal/copies.
+    // U16 payload length bounds work to 65535 bytes, with constant storage and no retained bytes.
+    private fun validNeighborChecksum(packet: ByteArray, length: Int): Boolean {
+        var sum = length.toLong() + 58
+        for (offset in 8 until 40 step 2)
+            sum += ((packet[offset].toInt() and 255) shl 8) or (packet[offset + 1].toInt() and 255)
+        val end = 40 + length
+        var offset = 40
+        while (offset < end) {
+            sum += (packet[offset].toInt() and 255) shl 8
+            if (offset + 1 < end) sum += packet[offset + 1].toInt() and 255
+            offset += 2
+        }
+        while (sum ushr 16 != 0L) sum = (sum and 65535) + (sum ushr 16)
+        return sum == 65535L
+    }
+
     fun beginSend(frame: ByteArray): Send? {
         if (attempts >= 16 || !detailsEnabled()) return null
         val send = synchronized(this) {

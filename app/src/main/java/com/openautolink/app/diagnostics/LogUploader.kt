@@ -13,8 +13,15 @@ import java.util.Locale
 /** Result of a manual upload, explicitly distinguishing retained EV coverage from other logs. */
 sealed class UploadResult {
     data class Success(val storedBytes: Int, val fileCount: Int, val coverage: String) : UploadResult()
-    data class Failure(val reason: String) : UploadResult()
+    data class Failure(
+        val reason: String,
+        val code: UploadFailureCode = UploadFailureCode.UNKNOWN,
+        val httpStatus: Int? = null,
+    ) : UploadResult()
 }
+
+/** Stable display codes; never derive user-facing diagnostics from exception/server text. */
+enum class UploadFailureCode { DISABLED, NOT_CONFIGURED, HTTPS_REQUIRED, NO_LOGS, SNAPSHOT, HTTP, NETWORK, CANCELED, UNKNOWN }
 
 /** Maintainer credentials must never be sent over cleartext or non-HTTP schemes. */
 object UploadEndpointPolicy {
@@ -50,19 +57,19 @@ class LogUploader(
 
     /** Blocking disk/network operation: invoke only from Dispatchers.IO on a manual action. */
     fun upload(url: String, token: String, deviceLabelPref: String): UploadResult {
-        if (url.isBlank() || token.isBlank()) return UploadResult.Failure("upload not configured")
-        if (!UploadEndpointPolicy.isAllowed(url)) return UploadResult.Failure("HTTPS upload URL required")
+        if (url.isBlank() || token.isBlank()) return UploadResult.Failure("upload not configured", UploadFailureCode.NOT_CONFIGURED)
+        if (!UploadEndpointPolicy.isAllowed(url)) return UploadResult.Failure("HTTPS upload URL required", UploadFailureCode.HTTPS_REQUIRED)
 
         val archive = try {
             val flushed = try { flushTelemetry() } catch (_: Exception) { false }
             val plan = LogUploadArchive.select(allLogFiles(), System.currentTimeMillis())
             if (plan.selected.isEmpty()) return UploadResult.Failure(
-                "no eligible log files; ${plan.skipped.size} omitted (age/size/member limits)"
+                "no eligible log files; ${plan.skipped.size} omitted (age/size/member limits)", UploadFailureCode.NO_LOGS
             )
             LogUploadArchive.create(plan, context.cacheDir, flushed)
         } catch (_: Exception) {
             // Do not leak filesystem paths, credentials, or URL query strings through exception text.
-            return UploadResult.Failure("log snapshot failed; source logs retained, retry upload")
+            return UploadResult.Failure("log snapshot failed; source logs retained, retry upload", UploadFailureCode.SNAPSHOT)
         }
 
         return archive.use { payload ->
@@ -88,11 +95,11 @@ class LogUploader(
                     UploadResult.Success(payload.file.length().toInt(), payload.plan.selected.size, payload.summary)
                 } else {
                     OalLog.w(TAG, "Upload rejected: HTTP $code; source logs retained")
-                    UploadResult.Failure("server HTTP $code; source logs retained")
+                    UploadResult.Failure("server HTTP $code; source logs retained", UploadFailureCode.HTTP, code)
                 }
             } catch (_: Exception) {
                 OalLog.e(TAG, "Upload failed; source logs retained")
-                UploadResult.Failure("network upload failed; source logs retained")
+                UploadResult.Failure("network upload failed; source logs retained", UploadFailureCode.NETWORK)
             } finally {
                 conn?.disconnect()
             }
