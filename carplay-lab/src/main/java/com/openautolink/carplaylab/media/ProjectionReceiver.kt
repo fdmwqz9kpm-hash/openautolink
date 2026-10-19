@@ -443,19 +443,34 @@ class ProjectionReceiver(
             true
         } catch (_: RejectedExecutionException) { tunnels.remove(session, channel); runtimeOwner = null; channel.close(); false }
     }
+    private val mediaPlayEpoch = java.util.concurrent.atomic.AtomicLong()
     /** Queue only for the exact authenticated metadata owner; queue admission is not phone receipt. */
     fun mediaCommand(session: AirPlaySession, index: Int): Boolean {
-        fun current() = currentMediaOwner(session)
+        val playEpoch = mediaPlayEpoch.get()
+        fun current() = currentMediaOwner(session) && (index != 1 || playEpoch == mediaPlayEpoch.get())
         if (index !in 1..5) { commandQueue(0, "declined", "invalid-index"); return false }
         if (!current()) { commandQueue(index, "declined", "stale-owner"); return false }
+        if (index == 2) {
+            // Cancel intent at ingress even if the bounded HID worker is blocked/full.
+            mediaPlayEpoch.incrementAndGet()
+            sink.cancelPendingMediaPlay()
+        }
         return try {
             input.execute {
                 // Neither a Binder focus request nor an event write may own the lifecycle monitor.
                 // Revalidate the exact authenticated owner after focus, which can outlast revocation.
                 if (!current()) { commandQueue(index, "declined", "stale-owner"); return@execute }
-                val focused = index != 1 || sink.requestFocusForUserPlay()
-                if (index == 1) status("media stage=media-focus-recovery reason=user-play result=${if (!current()) "stale-owner" else if (focused) "permitted" else "denied"}")
-                val sent = focused && current() && session.sendMedia(index)
+                val disposition = if (index == 1) sink.prepareUserPlay(::current) else null
+                if (disposition != null) {
+                    val live = current()
+                    status("media stage=media-play-disposition result=${if (live) disposition.token else "stale-owner"} " +
+                        "transport=${if (live && disposition.transportPermitted) "permitted" else "withheld"} " +
+                        "output=${if (live && disposition.outputPermitted) "permitted" else "withheld"}")
+                    // Retain old receipts for actual permission/denial, never label deferral a grant.
+                    if (!live || disposition.outputPermitted || !disposition.transportPermitted)
+                        status("media stage=media-focus-recovery reason=user-play result=${if (!live) "stale-owner" else if (disposition.outputPermitted) "permitted" else "denied"}")
+                }
+                val sent = (disposition?.transportPermitted != false) && current() && session.sendMedia(index)
                 status("media stage=media-control index=$index outcome=${if (sent) "sent" else "failed"}")
             }
             commandQueue(index, "accepted", "admitted")

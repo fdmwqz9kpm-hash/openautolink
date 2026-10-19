@@ -117,10 +117,10 @@ class CarPlayPurposeFocusTest {
         assertEquals(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT,request.focusGain)
         assertEquals(1f,f.volume(siri),0f)
         f.change(request,AudioManager.AUDIOFOCUS_LOSS)
-        assertTrue(f.sink.requestFocusForUserPlay())
+        assertFalse("live assistant defers media permission",f.sink.requestFocusForUserPlay())
         assertEquals("PLAY recovers assistant through a separate real assistant grant",1f,f.volume(siri),0f)
         assertEquals(AudioAttributes.USAGE_ASSISTANT,f.requests.last().audioAttributes.usage)
-        assertEquals(4,f.requests.size)
+        assertEquals(3,f.requests.size)
     }
 
     @Test fun alternateNeverRequestsOrRetainsPrimaryFocus() {
@@ -265,7 +265,7 @@ class CarPlayPurposeFocusTest {
             f.start(purpose)
             assertEquals(1,f.requests.size)
             assertEquals(0f,f.volume(id),0f)
-            assertTrue(f.sink.requestFocusForUserPlay())
+            assertEquals(purpose == "media",f.sink.requestFocusForUserPlay())
             assertEquals("explicit PLAY must obtain this purpose's own grant",1f,f.volume(id),0f)
             assertEquals(request.audioAttributes,f.requests.last().audioAttributes)
             assertEquals(request.focusGain,f.requests.last().focusGain)
@@ -284,25 +284,25 @@ class CarPlayPurposeFocusTest {
             f.response = if (usage == AudioAttributes.USAGE_VOICE_COMMUNICATION)
                 AudioManager.AUDIOFOCUS_REQUEST_FAILED else AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         }
-        assertTrue("return value remains the media result",f.sink.requestFocusForUserPlay())
-        assertEquals("one actual request per blocked primary purpose",8,f.requests.size)
-        old.zip(f.requests.drop(4)).forEach { (before,after) ->
+        assertFalse("live interactions defer media, not their separate recovery",f.sink.requestFocusForUserPlay())
+        assertEquals("one actual request per blocked nonmedia purpose",7,f.requests.size)
+        old.drop(1).zip(f.requests.drop(4)).forEach { (before,after) ->
             assertNotSame(before,after)
             assertEquals(before.audioAttributes,after.audioAttributes)
             assertEquals(before.focusGain,after.focusGain)
         }
-        assertEquals(1f,f.volume(ids[0]),0f)
+        assertEquals("nonmedia grants cannot authorize media",0f,f.volume(ids[0]),0f)
         assertEquals("media, ring and assistant grants cannot authorize denied call",0f,f.volume(ids[1]),0f)
         assertEquals(1f,f.volume(ids[2]),0f)
         assertEquals(1f,f.volume(ids[3]),0f)
         old.forEach { f.change(it,AudioManager.AUDIOFOCUS_GAIN) }
         assertEquals(0f,f.volume(ids[1]),0f)
         repeat(4) { f.sink.onAudioStopped(ids[1]); f.start("telephony") }
-        assertEquals("PLAY authorization was consumed by the failed call attempt",8,f.requests.size)
+        assertEquals("PLAY authorization was consumed by the failed call attempt",7,f.requests.size)
         f.duringRequest = null
         f.response = AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        assertTrue(f.sink.requestFocusForUserPlay())
-        assertEquals(9,f.requests.size)
+        assertFalse(f.sink.requestFocusForUserPlay())
+        assertEquals(8,f.requests.size)
         assertEquals(1f,f.volume(ids[1]),0f)
     }
 
@@ -367,7 +367,7 @@ class CarPlayPurposeFocusTest {
                 AudioManager.AUDIOFOCUS_REQUEST_FAILED else AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         }
         assertFalse("PLAY return is not a combined-purpose permission",f.sink.requestFocusForUserPlay())
-        assertEquals(4,f.requests.size)
+        assertEquals(3,f.requests.size)
         assertEquals(0f,f.volume(media),0f)
         assertEquals(1f,f.volume(call),0f)
     }
@@ -379,8 +379,8 @@ class CarPlayPurposeFocusTest {
         val siriRequest = f.requests.last()
         f.change(callRequest,AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
         f.change(siriRequest,AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)
-        assertTrue(f.sink.requestFocusForUserPlay())
-        assertEquals("only MEDIA needed a request",3,f.requests.size)
+        assertFalse(f.sink.requestFocusForUserPlay())
+        assertEquals("transient and duck memberships still defer MEDIA",2,f.requests.size)
         assertTrue(f.abandoned.isEmpty())
         assertEquals(0f,f.volume(call),0f)
         assertEquals(0.2f,f.volume(siri),0f)
@@ -397,10 +397,10 @@ class CarPlayPurposeFocusTest {
         f.abandonResponse = AudioManager.AUDIOFOCUS_REQUEST_FAILED
         try {
             f.sink.onAudioStopped(call)
-            assertTrue(f.sink.requestFocusForUserPlay())
-            assertEquals(2,f.requests.size)
+            assertFalse(f.sink.requestFocusForUserPlay())
+            assertEquals(1,f.requests.size)
             f.start("telephony")
-            assertEquals("authorized attempt cannot overlap exact retirement debt",2,f.requests.size)
+            assertEquals("authorized attempt cannot overlap exact retirement debt",1,f.requests.size)
             assertEquals(0f,f.volume(call),0f)
             f.change(old,AudioManager.AUDIOFOCUS_GAIN)
             assertEquals(0f,f.volume(call),0f)
@@ -408,8 +408,8 @@ class CarPlayPurposeFocusTest {
             repeat(4) { f.start("telephony") }
             assertEquals("failed recovery is not retried by SETUP",abandonAttempts,f.abandoned.size)
         } finally { f.abandonResponse = AudioManager.AUDIOFOCUS_REQUEST_GRANTED }
-        assertTrue(f.sink.requestFocusForUserPlay())
-        assertEquals(3,f.requests.size)
+        assertFalse(f.sink.requestFocusForUserPlay())
+        assertEquals(2,f.requests.size)
         assertEquals(AudioAttributes.USAGE_VOICE_COMMUNICATION,f.requests.last().audioAttributes.usage)
         assertEquals(1f,f.volume(call),0f)
     }
@@ -424,7 +424,7 @@ class CarPlayPurposeFocusTest {
                 f.sink.revokePendingWork()
         }
         assertFalse(f.sink.requestFocusForUserPlay())
-        assertEquals(4,f.requests.size) // two denials, media grant, revoked call grant; no ring retry
+        assertEquals(3,f.requests.size) // two denials, revoked call grant; no MEDIA or ring retry
         assertEquals(1,f.requests.count { it.audioAttributes.usage == AudioAttributes.USAGE_NOTIFICATION_RINGTONE })
         assertTrue(f.abandoned.contains(f.requests.last()))
     }
@@ -463,12 +463,12 @@ class CarPlayPurposeFocusTest {
     }
 
     @Test fun retiredCallListenerCannotMutateReplacementOrOtherPurpose() = Fixture().use { f ->
+        val media = f.start("media")
         val call = f.start("telephony")
-        val old = f.requests.single()
+        val old = f.requests.last()
         f.sink.onAudioStopped(call)
         f.start("telephony")
         val current = f.requests.last()
-        val media = f.start("media")
         f.change(old,AudioManager.AUDIOFOCUS_LOSS)
         assertEquals(1f,f.volume(call),0f)
         assertEquals(1f,f.volume(media),0f)
