@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.FilterChip
@@ -72,6 +73,7 @@ private enum class DiagnosticsTab(
     SYSTEM("System", Icons.Default.Info),
     NETWORK("Network", Icons.Default.NetworkCheck),
     CAR("Car", Icons.Default.DirectionsCar),
+    MICROPHONE("Microphone", Icons.Default.Mic),
     DEBUG("Debug", Icons.Default.BugReport),
     LOGS("Logs", Icons.Default.Terminal),
 }
@@ -80,14 +82,17 @@ private enum class DiagnosticsTab(
 fun DiagnosticsScreen(
     viewModel: DiagnosticsViewModel = viewModel(),
     onBack: () -> Unit = {},
+    microphoneController: MicrophoneDiagnosticController? = null,
 ) {
-    OalUiScale { DiagnosticsScreenContent(viewModel, onBack) }
+    val unavailable = remember { MicrophoneDiagnosticController() }
+    OalUiScale { DiagnosticsScreenContent(viewModel, onBack, microphoneController ?: unavailable) }
 }
 
 @Composable
 private fun DiagnosticsScreenContent(
     viewModel: DiagnosticsViewModel,
     onBack: () -> Unit,
+    microphoneController: MicrophoneDiagnosticController,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(DiagnosticsTab.SYSTEM) }
@@ -152,6 +157,7 @@ private fun DiagnosticsScreenContent(
                     DiagnosticsTab.SYSTEM -> SystemTab(uiState.system)
                     DiagnosticsTab.NETWORK -> NetworkTab(uiState.network, uiState.networkProbe, viewModel)
                     DiagnosticsTab.CAR -> CarTab(uiState.car)
+                    DiagnosticsTab.MICROPHONE -> MicrophoneDiagnosticPanel(microphoneController)
                     DiagnosticsTab.DEBUG -> DebugTab(uiState.debugProbe, viewModel)
                     DiagnosticsTab.LOGS -> LogsTab(uiState.logs, uiState.logFilter, viewModel)
                 }
